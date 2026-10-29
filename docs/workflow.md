@@ -251,29 +251,83 @@ Releases are not automated yet. The intended flow:
 
 ### Using vulnhound in your own pipeline
 
+The repository root is a GitHub Action (`action.yml`), so other repositories
+can use it with `uses: 0x48core/vulnhound@<ref>`.
+
 ```yaml
 # .github/workflows/vulnhound.yml
 name: Dependency scan
 on: [pull_request]
+
+permissions:
+  contents: read
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - id: vulnhound
+        uses: 0x48core/vulnhound@main # pin a release tag or commit SHA once available
         with:
-          go-version: stable
-      - run: go install github.com/0x48core/vulnhound/cmd/vulnhound@latest
-      - run: vulnhound scan dir . --skip-dev --fail-on high
+          fail-on: high
+          skip-dev: true
+      - if: always() && steps.vulnhound.outputs.report != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnhound-report
+          path: ${{ steps.vulnhound.outputs.report }}
 ```
 
-| Goal | Flags |
+| Goal | Input |
 |------|-------|
-| Block merges on serious issues | `--fail-on high` |
-| Ignore test-only tooling | `--skip-dev` |
-| Keep a machine-readable record | `-f json -o vulnhound.json`, then upload as an artifact |
+| Block merges on serious issues | `fail-on: high` |
+| Ignore test-only tooling | `skip-dev: true` |
+| Scan one service in a monorepo | `path: services/api` |
+| Reuse the job's existing Go | `setup-go: false` |
+| Keep a machine-readable record | Upload `steps.<id>.outputs.report` as an artifact |
 
-Exit code 2 means the scan itself failed (for example OSV was unreachable),
-not that vulnerabilities were found. Treat it as a pipeline error rather than
-a policy failure.
+The step fails with exit code 1 when `fail-on` is exceeded, and with exit
+code 2 when the scan itself failed (for example OSV was unreachable).
+Outputs and the job summary are still written when the policy fails, so
+`if: always()` steps can use them.
+
+#### How the action works
+
+```mermaid
+flowchart LR
+    A[setup-go<br/>from action's go.mod] --> B[go build<br/>from action source]
+    B --> C[scripts/action-scan.sh]
+    C --> D[vulnhound scan dir<br/>--format json]
+    D --> E[log lines]
+    D --> F[step outputs]
+    D --> G[job summary table]
+```
+
+1. **Set up Go** (skipped with `setup-go: false`) using the Go version in
+   the action's own `go.mod`.
+2. **Build** vulnhound from the action's checkout (`$GITHUB_ACTION_PATH`).
+   The binary therefore always matches the ref the caller pinned, and its
+   version is set to that ref. The build directory is added to `PATH`, so
+   later steps can run `vulnhound` directly.
+3. **Scan** once with JSON output (`scripts/action-scan.sh`). The log lines,
+   the `findings` and `report` outputs, and the Markdown job summary are all
+   derived from that one report. Inputs reach the script as environment
+   variables, never interpolated into shell code, so they cannot inject
+   commands.
+
+`.github/workflows/action-test.yml` runs the action from this checkout
+(`uses: ./`) on Linux, macOS, and Windows for every change that affects it.
+It checks a vulnerable scan, a `fail-on` failure with outputs still set,
+`setup-go: false`, and an empty project.
+
+#### Versioning the action
+
+Until the first release, consumers use `@main`. When releases start:
+
+1. Tag the release (`v1.0.0`) and move a major tag (`v1`) to the same
+   commit, so `@v1` users get fixes and features without breaking changes.
+2. Security-sensitive consumers can pin the full commit SHA instead;
+   Dependabot keeps SHA pins up to date.
+3. To list the action on the GitHub Marketplace, tick "Publish this Action
+   to the GitHub Marketplace" when creating the GitHub release.

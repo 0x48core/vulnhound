@@ -63,6 +63,37 @@ database entries without a GitHub advisory) show as `UNKNOWN`. Records that
 alias each other, such as `GO-2023-1737` and `GHSA-2c4m-59x9-fr2g`, are merged
 into one finding.
 
+## GitHub Action
+
+Use vulnhound in any repository's workflow:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: 0x48core/vulnhound@main # pin a release tag or commit SHA once available
+  with:
+    fail-on: high
+    skip-dev: true
+```
+
+The scan results appear as a table in the run's **Summary** tab, and a JSON
+report is written for later steps.
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `path` | `.` | Directory to scan |
+| `fail-on` | *(empty)* | Fail at or above `low`, `medium`, `high`, or `critical` |
+| `skip-dev` | `false` | Ignore development-only dependencies |
+| `setup-go` | `true` | Install Go to build vulnhound; set `false` if the job already has Go 1.26+ |
+
+| Output | Description |
+|--------|-------------|
+| `findings` | Number of vulnerabilities found |
+| `report` | Path to the JSON report |
+
+The action builds vulnhound from its own source, so the scanner version always
+matches the action ref you pin. See [docs/workflow.md](docs/workflow.md#using-vulnhound-in-your-own-pipeline)
+for more examples.
+
 ## How it works
 
 ```
@@ -93,6 +124,7 @@ More detail:
 ## Roadmap
 
 - [x] `scan dir` with Go and npm, OSV matching, table and JSON output, `--fail-on`
+- [x] GitHub Action with job summary and JSON report
 - [ ] 🚧 SARIF output for GitHub code scanning
 - [ ] 🚧 `scan image`: container images (Alpine, Debian, Go binaries)
 - [ ] 🚧 Offline vulnerability database (SQLite cache of OSV dumps)

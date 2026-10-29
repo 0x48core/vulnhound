@@ -1,0 +1,65 @@
+name: vulnhound scan
+description: Scan dependencies for known vulnerabilities using OSV.dev, with a job summary and a JSON report.
+author: 0x48core
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  path:
+    description: Directory to scan, relative to the workspace.
+    required: false
+    default: "."
+  fail-on:
+    description: Fail the step if any finding is at or above this severity (low, medium, high, critical). Empty never fails on findings.
+    required: false
+    default: ""
+  skip-dev:
+    description: Ignore development-only dependencies.
+    required: false
+    default: "false"
+  setup-go:
+    description: Install Go to build vulnhound. Set to false if the job has already set up Go 1.26 or newer.
+    required: false
+    default: "true"
+
+outputs:
+  findings:
+    description: Number of vulnerabilities found.
+    value: ${{ steps.scan.outputs.findings }}
+  report:
+    description: Absolute path to the JSON report.
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      if: inputs.setup-go == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    # Build from the action's own source, so the binary always matches the
+    # ref the caller pinned (@v1, @<sha>, ...).
+    - name: Build vulnhound
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        bin_dir="$RUNNER_TEMP/vulnhound-bin"
+        mkdir -p "$bin_dir"
+        CGO_ENABLED=0 go build -C "$GITHUB_ACTION_PATH" -trimpath \
+          -ldflags "-s -w -X main.version=${ACTION_REF:-dev}" \
+          -o "$bin_dir/vulnhound$(go env GOEXE)" ./cmd/vulnhound
+        echo "$bin_dir" >> "$GITHUB_PATH"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SKIP_DEV: ${{ inputs.skip-dev }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/action-scan.sh"

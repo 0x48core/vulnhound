@@ -1,0 +1,86 @@
+# Runs action.yml from this checkout (uses: ./) the way a consumer would,
+# so a broken action is caught before it is tagged. It queries the real
+# OSV.dev API against the deliberately vulnerable fixtures.
+name: Action self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - action.yml
+      - scripts/action-scan.sh
+      - cmd/**
+      - internal/**
+      - pkg/**
+      - go.mod
+      - go.sum
+      - .github/workflows/action-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan vulnerable fixtures
+        id: scan
+        uses: ./
+        with:
+          path: internal/analyzer/testdata
+
+      - name: Expect findings and a report
+        shell: bash
+        env:
+          FINDINGS: ${{ steps.scan.outputs.findings }}
+          REPORT: ${{ steps.scan.outputs.report }}
+        run: |
+          test "$FINDINGS" -gt 0 || { echo "expected findings, got '$FINDINGS'"; exit 1; }
+          test -s "$REPORT" || { echo "report missing: $REPORT"; exit 1; }
+          jq -e '.findings | length > 0' "$REPORT" > /dev/null
+          vulnhound version # build step put vulnhound on PATH
+
+      # Go is already set up by the first scan, so this also covers setup-go: false.
+      - name: Scan with --fail-on critical
+        id: strict
+        continue-on-error: true
+        uses: ./
+        with:
+          path: internal/analyzer/testdata
+          fail-on: critical
+          skip-dev: "true"
+          setup-go: "false"
+
+      - name: Expect the policy to fail the step
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.strict.outcome }}
+          FINDINGS: ${{ steps.strict.outputs.findings }}
+        run: |
+          test "$OUTCOME" = failure || { echo "expected failure, got '$OUTCOME'"; exit 1; }
+          test "$FINDINGS" -gt 0 || { echo "outputs must be set even when the step fails"; exit 1; }
+
+      - name: Create an empty project
+        shell: bash
+        run: mkdir -p "$RUNNER_TEMP/empty-project"
+
+      - name: Scan an empty project
+        id: empty
+        uses: ./
+        with:
+          path: ${{ runner.temp }}/empty-project
+          fail-on: low
+          setup-go: "false"
+
+      - name: Expect no findings
+        shell: bash
+        env:
+          FINDINGS: ${{ steps.empty.outputs.findings }}
+        run: test "$FINDINGS" -eq 0

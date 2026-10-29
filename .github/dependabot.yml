@@ -1,0 +1,19 @@
+# Dependabot owns GitHub Actions updates. Go modules are left to Renovate
+# (renovate.json) so the two bots never open duplicate PRs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Ho_Chi_Minh
+    cooldown:
+      default-days: 3
+    groups:
+      github-actions:
+        patterns: ["*"]
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: ci

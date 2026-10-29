@@ -49,7 +49,7 @@ flowchart TD
 | 5 | Deduplicate | `analyzer.dedupe` | Merge by ecosystem + name + version, union locations |
 | 6 | Filter | `scan.Run` | `--skip-dev` drops packages that are dev-only everywhere |
 | 7 | Match | `matcher.OSV.Match` | Skipped when there are no packages |
-| 8 | Report | `report.Write` | Colors only on a terminal |
+| 8 | Report | `report.Write` | Grouped by package; colors per `--color` and `VULNHOUND_COLORS` |
 | 9 | Apply policy | `runScan` | `--fail-on` returns `errFindings` → exit 1 |
 
 ### Debugging a scan

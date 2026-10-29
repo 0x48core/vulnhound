@@ -34,14 +34,67 @@ vulnhound scan dir . --skip-dev               # ignore devDependencies
 ```
 
 ```
-Target: /home/me/myapp (dir)
-Packages: 11   Vulnerabilities: 39 (1 CRITICAL, 5 HIGH, 13 MEDIUM, 3 LOW, 17 UNKNOWN)
+Scanned 33 packages in /home/me/goledger
+Found 13 vulnerabilities in 3 packages: 2 critical · 1 low · 10 unknown
 
-PACKAGE   VERSION  ECOSYSTEM  ID                   SEVERITY  FIXED IN  LOCATION           SUMMARY
-minimist  1.2.0    npm        GHSA-xvch-5gv4-984h  CRITICAL  1.2.6     package-lock.json  Prototype Pollution in minimist
-lodash    4.17.15  npm        GHSA-p6mc-m468-83gw  HIGH      4.17.19   package-lock.json  Prototype Pollution in lodash
-...
+github.com/jackc/pgx/v5 v5.7.5  → v5.9.2  Go · go.mod
+  CRITICAL  GHSA-9jj7-4m8r-rfcm  v5.9.0   Memory-safety vulnerability in github.com/jackc/pgx/v5.
+  CRITICAL  GHSA-xgrm-4fwx-7qm8  v5.9.0   pgx contains memory-safety vulnerability
+  LOW       GHSA-j88v-2chj-qfwx  v5.9.2   pgx: SQL Injection via placeholder confusion with dollar…
+
+golang.org/x/crypto v0.55.0  → v0.56.0 fixes 2 of 3  Go · go.mod · indirect
+  UNKNOWN   GO-2026-5932         no fix   The golang.org/x/crypto/openpgp package is unmaintained…
+  UNKNOWN   GO-2026-6354         v0.56.0  Prevent DoS on deadlocked undecided channel in golang.org…
+  ...
+
+Upgrading 3 packages fixes 12 of 13 vulnerabilities.
 ```
+
+Findings are grouped by package, most severe first. Each package line shows
+the single upgrade that fixes the most findings (`→ v5.9.2`), or
+`no fix available`.
+
+### Colors
+
+In a terminal, severities, upgrades, and missing fixes are colored, and
+vulnerability IDs are clickable links to osv.dev (in terminals that support
+links). Summaries are cut to fit the terminal width.
+
+| Flag / variable | Effect |
+|-----------------|--------|
+| `--color auto` | Default: color only when writing to a terminal |
+| `--color always` | Color even when piped, e.g. CI logs or `less -R` |
+| `--color never` | No color (`--no-color` also works) |
+| `NO_COLOR=1` | Disables `auto` color ([no-color.org](https://no-color.org)) |
+| `VULNHOUND_COLORS` | Custom colors, see below |
+
+`VULNHOUND_COLORS` takes `role=SGR` pairs separated by `:`, where SGR is an
+ANSI code such as `1;31` (bold red). An empty value turns a role's color off.
+
+```bash
+# Bold red CRITICAL text instead of a red badge, magenta HIGH, uncolored summaries
+export VULNHOUND_COLORS='critical=1;31:high=1;35:summary='
+```
+
+| Role | Default | Used for |
+|------|---------|----------|
+| `critical` | `1;97;41` bold white on red | CRITICAL severity |
+| `high` | `1;31` bold red | HIGH severity |
+| `medium` | `1;33` bold yellow | MEDIUM severity |
+| `low` | `1;36` bold cyan | LOW severity |
+| `unknown` | `1;90` bold grey | UNKNOWN severity |
+| `package` | `1` bold | Package name |
+| `version` | *(none)* | Installed and fixed versions |
+| `meta` | `2` dim | Ecosystem, location, `indirect`, `dev` |
+| `id` | *(none)* | Vulnerability ID |
+| `summary` | *(none)* | Vulnerability summary |
+| `upgrade` | `32` green | An upgrade that fixes everything |
+| `partial` | `33` yellow | An upgrade that fixes some findings |
+| `nofix` | `31` red | No fix available |
+| `title` | `1` bold | Counts in the header |
+
+Unknown roles or invalid codes are skipped with a warning, so a typo never
+breaks the output. JSON output never contains color codes.
 
 ### Exit codes
 

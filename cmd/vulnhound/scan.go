@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/0x48core/vulnhound/internal/analyzer"
 	"github.com/0x48core/vulnhound/internal/matcher"
@@ -22,9 +24,15 @@ type scanFlags struct {
 	output  string
 	failOn  string
 	skipDev bool
-	noColor bool
+	color   string
+	noColor bool // deprecated alias for --color never
 	osvURL  string
 }
+
+var colorModes = []string{"auto", "always", "never"}
+
+// colorsEnv holds theme overrides, e.g. "critical=1;31:upgrade=1;32".
+const colorsEnv = "VULNHOUND_COLORS"
 
 func newScanCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -57,9 +65,11 @@ func newScanDirCmd() *cobra.Command {
 	fl.StringVarP(&f.output, "output", "o", "", "write the report to a file instead of stdout")
 	fl.StringVar(&f.failOn, "fail-on", "", "exit with code 1 if any finding is at or above this severity (low, medium, high, critical)")
 	fl.BoolVar(&f.skipDev, "skip-dev", false, "ignore development-only dependencies")
-	fl.BoolVar(&f.noColor, "no-color", false, "disable colored output")
+	fl.StringVar(&f.color, "color", "auto", "colorize table output: auto (when stdout is a terminal), always, never; customize with $"+colorsEnv)
+	fl.BoolVar(&f.noColor, "no-color", false, "same as --color never")
 	fl.StringVar(&f.osvURL, "osv-url", matcher.DefaultOSVURL, "OSV API base URL")
 	_ = fl.MarkHidden("osv-url")
+	_ = fl.MarkHidden("no-color")
 	return cmd
 }
 
@@ -67,6 +77,12 @@ func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
 	// Validate flags before doing any work.
 	if !slices.Contains(report.Formats, f.format) {
 		return fmt.Errorf("unknown format %q (supported: %s)", f.format, strings.Join(report.Formats, ", "))
+	}
+	if !slices.Contains(colorModes, f.color) {
+		return fmt.Errorf("invalid --color %q: want %s", f.color, strings.Join(colorModes, ", "))
+	}
+	if f.noColor {
+		f.color = "never"
 	}
 	var threshold types.Severity
 	if f.failOn != "" {
@@ -105,7 +121,6 @@ func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
 
 func writeReport(stdout io.Writer, r *types.Report, f scanFlags) (err error) {
 	w := stdout
-	color := !f.noColor && os.Getenv("NO_COLOR") == "" && isTerminal(w)
 	if f.output != "" {
 		file, err := os.Create(f.output)
 		if err != nil {
@@ -116,16 +131,47 @@ func writeReport(stdout io.Writer, r *types.Report, f scanFlags) (err error) {
 				err = cerr
 			}
 		}()
-		w, color = file, false
+		w = file
 	}
-	return report.Write(w, f.format, r, report.Options{Color: color})
+	return report.Write(w, f.format, r, renderOptions(w, f.color))
 }
 
-func isTerminal(w io.Writer) bool {
+// renderOptions decides colors, hyperlinks, and width for w.
+//
+// "auto" colors only a terminal, and respects NO_COLOR (https://no-color.org)
+// and TERM=dumb. "always" colors anything, for CI logs or `less -R`.
+// Hyperlinks and summary truncation apply only to a real terminal, since
+// files and pipes have no width and may not understand OSC 8 links.
+func renderOptions(w io.Writer, mode string) report.Options {
+	fd, tty := terminalFd(w)
+	var opts report.Options
+	switch mode {
+	case "always":
+		opts.Color = true
+	case "auto":
+		opts.Color = tty && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	}
+	if tty {
+		opts.Hyperlinks = opts.Color
+		if width, _, err := term.GetSize(fd); err == nil {
+			opts.Width = width
+		}
+	}
+	if opts.Color {
+		theme, errs := report.ParseTheme(os.Getenv(colorsEnv))
+		for _, err := range errs {
+			slog.Warn("ignoring invalid "+colorsEnv+" entry", "err", err)
+		}
+		opts.Theme = theme
+	}
+	return opts
+}
+
+func terminalFd(w io.Writer) (int, bool) {
 	file, ok := w.(*os.File)
 	if !ok {
-		return false
+		return 0, false
 	}
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	fd := int(file.Fd())
+	return fd, term.IsTerminal(fd)
 }

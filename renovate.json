@@ -1,0 +1,29 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Renovate owns Go module updates. GitHub Actions are left to Dependabot (.github/dependabot.yml) so the two bots never open duplicate PRs.",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["gomod"],
+  "timezone": "Asia/Ho_Chi_Minh",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies", "go"],
+  "minimumReleaseAge": "3 days",
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "labels": ["dependencies", "security"]
+  },
+  "packageRules": [
+    {
+      "description": "Update the golang.org/x modules together; they are released in lockstep.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["golang.org/x/**"],
+      "groupName": "golang.org/x"
+    },
+    {
+      "description": "Keep the go directive as the minimum supported version; bump it deliberately, not automatically.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang", "toolchain"],
+      "enabled": false
+    }
+  ]
+}

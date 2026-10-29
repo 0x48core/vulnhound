@@ -197,6 +197,46 @@ flowchart LR
 
 Both jobs use the Go version from `go.mod` and run in parallel.
 
+### Dependency updates
+
+Two bots keep dependencies current. Each owns one ecosystem, so they never
+open duplicate pull requests for the same dependency.
+
+| Bot | Config | Updates | Schedule |
+|-----|--------|---------|----------|
+| [Renovate](https://docs.renovatebot.com) | `renovate.json` | Go modules (`go.mod`, `go.sum`) | Mondays before 06:00 (Asia/Ho_Chi_Minh) |
+| [Dependabot](https://docs.github.com/code-security/dependabot) | `.github/dependabot.yml` | GitHub Actions in `.github/workflows/` | Mondays 06:00 (Asia/Ho_Chi_Minh), all actions grouped into one PR |
+
+Renovate is used for Go because it runs `go mod tidy` after each update and
+groups the `golang.org/x/*` modules into a single PR.
+
+Shared policies:
+
+- **3-day release-age wait.** A new version must have been published for 3
+  days before a PR opens (`minimumReleaseAge` in Renovate, `cooldown` in
+  Dependabot). This avoids picking up a compromised or quickly yanked
+  release.
+- **Security fixes skip the schedule and the wait.** Renovate opens them as
+  soon as a vulnerability is known, using both GitHub alerts and
+  OSV (`osvVulnerabilityAlerts`), and labels them `security`.
+- **The `go` directive is not bumped automatically.** It is the minimum Go
+  version vulnhound supports, so raising it is a deliberate decision.
+- **Indirect Go modules are not updated on their own.** This is Renovate's
+  default; they move when a direct dependency that needs them is updated.
+- Nothing auto-merges. Every update goes through CI and review.
+
+One-time setup on GitHub:
+
+1. Install the [Renovate GitHub App](https://github.com/apps/renovate) on the
+   repository. Its first PR is an onboarding check; because `renovate.json`
+   already exists, it only confirms the config. Renovate also maintains a
+   "Dependency Dashboard" issue listing pending updates.
+2. Dependabot version updates start automatically once
+   `.github/dependabot.yml` is on the default branch.
+3. Optionally enable **Dependabot alerts** under *Settings → Code security*.
+   Leave **Dependabot security updates** off, because Renovate already opens
+   security PRs for Go modules.
+
 ### Releases (planned)
 
 Releases are not automated yet. The intended flow:

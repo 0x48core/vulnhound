@@ -1,0 +1,81 @@
+# Automated releases.
+#
+# On every push to main, release-please reads the Conventional Commits since
+# the last release and opens or updates a "chore: release X.Y.Z" pull
+# request that bumps the version and updates CHANGELOG.md. Merging that pull
+# request creates the vX.Y.Z tag and GitHub release; the later jobs then
+# attach binaries and move the major tag (v0, v1, ...) used by the action.
+#
+# Everything runs in one workflow because tags and releases created with
+# GITHUB_TOKEN do not trigger other workflows.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      major: ${{ steps.release.outputs.major }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          # A PAT or GitHub App token lets CI run on the release PR; pull
+          # requests opened with GITHUB_TOKEN do not trigger workflows.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  binaries:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  major-tag:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      # Lets action users pin `@v1` and receive every v1.x.y release.
+      - name: Move major tag
+        env:
+          MAJOR_TAG: v${{ needs.release-please.outputs.major }}
+        run: |
+          git tag --force "$MAJOR_TAG"
+          git push --force origin "refs/tags/$MAJOR_TAG"

@@ -1,0 +1,39 @@
+# Builds release binaries for tags created by release-please
+# (.github/workflows/release.yml). Release notes come from CHANGELOG.md via
+# release-please, so GoReleaser only uploads assets to the existing release.
+version: 2
+
+project_name: vulnhound
+
+builds:
+  - id: vulnhound
+    main: ./cmd/vulnhound
+    binary: vulnhound
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+
+archives:
+  - id: vulnhound
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+release:
+  mode: keep-existing

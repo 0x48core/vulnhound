@@ -1,0 +1,39 @@
+# Pull requests are squash-merged, so the PR title becomes the commit
+# message on main that release-please reads. Require Conventional Commits.
+name: PR title
+
+on:
+  # pull_request_target so titles of PRs from forks can be checked. This
+  # workflow never checks out or runs code from the pull request.
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            revert
+            deps
+            docs
+            refactor
+            test
+            build
+            ci
+            chore
+            style
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            Start the subject with a lowercase letter, e.g.
+            "feat: add SARIF output", not "feat: Add SARIF output".

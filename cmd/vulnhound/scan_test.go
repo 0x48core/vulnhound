@@ -80,13 +80,39 @@ func TestScanDirTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"Packages: 2", "1 HIGH", "lodash", "GHSA-p6mc-m468-83gw", "4.17.19"} {
+	for _, want := range []string{"Scanned 2 packages", "1 high", "lodash 4.17.15  → 4.17.19", "GHSA-p6mc-m468-83gw"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "\x1b[") {
-		t.Error("color codes written to a non-terminal")
+	if strings.Contains(out, "\x1b") {
+		t.Error("escape codes written to a non-terminal")
+	}
+}
+
+func TestScanDirColor(t *testing.T) {
+	osv := newFakeOSV(t)
+	dir := writeProject(t)
+
+	t.Setenv("VULNHOUND_COLORS", "high=35")
+	out, err := runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "--color", "always")
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "\x1b[35mHIGH\x1b[0m") {
+		t.Errorf("--color always with a custom theme should color HIGH magenta:\n%q", out)
+	}
+	if strings.Contains(out, "\x1b]8;") {
+		t.Error("hyperlinks must only be written to a terminal")
+	}
+
+	out, err = runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "--color", "always", "--no-color")
+	if err != nil || strings.Contains(out, "\x1b") {
+		t.Errorf("--no-color must win: err=%v\n%q", err, out)
+	}
+
+	if _, err := runCLI(t, "scan", "dir", dir, "--color", "sometimes"); err == nil || !strings.Contains(err.Error(), "--color") {
+		t.Errorf("--color sometimes: err = %v, want a usage error", err)
 	}
 }
 

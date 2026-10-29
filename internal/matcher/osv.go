@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/mod/semver"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/0x48core/vulnhound/internal/version"
 	"github.com/0x48core/vulnhound/pkg/types"
 )
 
@@ -402,7 +402,7 @@ func severityOf(h osvSeverityHolder) (types.Severity, bool) {
 // cannot be compared, or no range contains p.Version (OSV may match on an
 // explicit version list), it lists every fixed version instead.
 func fixedVersion(p types.Package, v *osvVuln) string {
-	cur, comparable := canonical(p.Ecosystem, p.Version)
+	comparable := version.Comparable(p.Ecosystem, p.Version)
 	var all []string
 	for _, a := range v.Affected {
 		if a.Package.Name != p.Name || a.Package.Ecosystem != p.Ecosystem {
@@ -419,7 +419,7 @@ func fixedVersion(p types.Package, v *osvVuln) string {
 					introduced = e.Introduced
 				case e.Fixed != "":
 					all = append(all, e.Fixed)
-					if comparable && inRange(p.Ecosystem, cur, introduced, e.Fixed) {
+					if comparable && inRange(p.Ecosystem, p.Version, introduced, e.Fixed) {
 						return displayVersion(p.Ecosystem, e.Fixed)
 					}
 				}
@@ -438,27 +438,14 @@ func fixedVersion(p types.Package, v *osvVuln) string {
 }
 
 func inRange(eco, cur, introduced, fixed string) bool {
-	fx, ok := canonical(eco, fixed)
-	if !ok || semver.Compare(cur, fx) >= 0 {
+	if c, ok := version.Compare(eco, cur, fixed); !ok || c >= 0 {
 		return false
 	}
 	if introduced == "" || introduced == "0" {
 		return true
 	}
-	in, ok := canonical(eco, introduced)
-	return ok && semver.Compare(cur, in) >= 0
-}
-
-// canonical converts a version to the "vMAJOR.MINOR.PATCH" form understood
-// by golang.org/x/mod/semver. Go and npm both use semantic versioning;
-// other ecosystems will need their own comparators.
-func canonical(eco, v string) (string, bool) {
-	switch eco {
-	case types.EcosystemGo, types.EcosystemNpm:
-		c := "v" + strings.TrimPrefix(v, "v")
-		return c, semver.IsValid(c)
-	}
-	return "", false
+	c, ok := version.Compare(eco, cur, introduced)
+	return ok && c >= 0
 }
 
 // displayVersion formats an OSV version the way the ecosystem writes it:

@@ -252,15 +252,31 @@ errors, waiting 1 s and then 2 s. Other 4xx responses fail immediately.
 
 `report.Write(w, format, report, opts)` renders `table` or `json`.
 
-- **table:** a header with target and severity counts, then one row per
-  finding. Summaries are truncated to 60 characters. Multiple locations show
-  as `first (+N)`.
+- **table** ([`table.go`](../internal/report/table.go)): a two-line header
+  with package and severity counts, then findings **grouped by package**.
+  Groups are ordered by their most severe finding, then by number of
+  findings. Each group header shows the best upgrade: the highest single
+  fixed version among its findings, compared with `internal/version`, and
+  how many findings it fixes. A footer totals what upgrading would fix.
 - **json:** the `types.Report` struct, indented. Empty lists are `[]`, never
-  `null`.
+  `null`. Never colored.
 
-Colors are used only when stdout is a terminal, `NO_COLOR` is unset, and
-`--no-color` is not passed. Each ANSI color code is exactly 5 bytes so
-`text/tabwriter`, which counts bytes, still aligns the columns.
+Table rendering does not use `text/tabwriter`. Column widths are measured
+on the plain text, and color codes and padding are added afterwards, so any
+color theme keeps the columns aligned. A test strips the codes from colored
+output and checks it is identical to plain output.
+
+`report.Options` carries what the CLI decided about the output stream:
+
+| Option | Set when | Effect |
+|--------|----------|--------|
+| `Color` | `--color always`, or `auto` on a terminal without `NO_COLOR` / `TERM=dumb` | ANSI SGR colors from the `Theme` |
+| `Hyperlinks` | colors are on **and** stdout is a terminal | Vulnerability IDs become OSC 8 links to osv.dev |
+| `Width` | stdout is a terminal | Summaries are cut to fit; dropped when under 10 columns remain |
+| `Theme` | colors are on | Defaults from [`theme.go`](../internal/report/theme.go) with `VULNHOUND_COLORS` overrides |
+
+Files and pipes get no hyperlinks and no width limit even with
+`--color always`, since they have no width and may not understand OSC 8.
 
 ### CLI and exit codes
 

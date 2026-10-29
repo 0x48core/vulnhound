@@ -9,9 +9,14 @@ known vulnerabilities with the version that fixes them.
 
 ## Install
 
+Download a binary for Linux, macOS, or Windows from the
+[releases page](https://github.com/0x48core/vulnhound/releases), or:
+
 ```bash
 go install github.com/0x48core/vulnhound/cmd/vulnhound@latest
 ```
+
+Changes in each release are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Or build from source:
 
@@ -69,7 +74,7 @@ Use vulnhound in any repository's workflow:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: 0x48core/vulnhound@main # pin a release tag or commit SHA once available
+- uses: 0x48core/vulnhound@main # use @v0 once the first release (v0.1.0) is published
   with:
     fail-on: high
     skip-dev: true

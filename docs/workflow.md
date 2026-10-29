@@ -174,9 +174,15 @@ Using Cargo (`Cargo.lock`) as an example:
 ### Git workflow
 
 1. Branch from `main`: `feat/<topic>`, `fix/<topic>`, or `docs/<topic>`.
-2. Keep commits focused; use imperative subjects (`Add Cargo.lock analyzer`).
-3. Open a pull request. CI must pass before merging.
-4. Squash-merge to keep `main` linear.
+2. Open a pull request whose title is a
+   [Conventional Commit](https://www.conventionalcommits.org):
+   `feat: add Cargo.lock analyzer`, `fix(npm): handle workspace links`.
+   The `PR title` check (`.github/workflows/pr-title.yml`) enforces this,
+   including a lowercase subject.
+3. CI must pass before merging.
+4. **Squash-merge.** The PR title becomes the commit message on `main`,
+   which is what drives the version bump and the changelog entry (see
+   [Releases](#releases)). Commit messages inside the branch don't matter.
 
 ---
 
@@ -237,17 +243,90 @@ One-time setup on GitHub:
    Leave **Dependabot security updates** off, because Renovate already opens
    security PRs for Go modules.
 
-### Releases (planned)
+### Releases
 
-Releases are not automated yet. The intended flow:
+Releases are automated with
+[release-please](https://github.com/googleapis/release-please). Nobody
+creates tags or edits `CHANGELOG.md` by hand.
 
-1. Tag `main`: `git tag v0.1.0 && git push --tags`.
-2. A release workflow runs [GoReleaser](https://goreleaser.com), which builds
-   static binaries for Linux, macOS, and Windows (amd64/arm64), creates a
-   GitHub release with checksums, and publishes a container image.
-3. `make build` already injects the version with
-   `-ldflags "-X main.version=…"`, so released binaries report it in
-   `vulnhound version`.
+```mermaid
+flowchart TD
+    A[PR squash-merged to main<br/>title: feat: add SARIF output] --> B[release.yml: release-please]
+    B --> C{Releasable commits<br/>since last release?}
+    C -- no --> Z[nothing to do]
+    C -- yes --> D[Open or update PR<br/>chore: release 0.2.0<br/>bumps manifest + CHANGELOG.md]
+    D --> E[More changes merged?<br/>PR updates itself]
+    E --> D
+    D -- you merge it --> F[release-please creates<br/>tag v0.2.0 + GitHub release]
+    F --> G[binaries job: GoReleaser<br/>uploads archives + checksums]
+    F --> H[major-tag job: moves v0<br/>to the new release]
+```
+
+1. **Every push to `main`** runs `.github/workflows/release.yml`.
+   release-please reads the Conventional Commits since the last release.
+2. If any are **releasable**, it opens a pull request titled
+   `chore: release X.Y.Z` (or updates the one already open). The PR bumps
+   `.release-please-manifest.json` and adds the new section to
+   `CHANGELOG.md`. Review the PR to see exactly what the release contains.
+3. **Merging that PR is the release.** release-please creates the `vX.Y.Z`
+   tag and a GitHub release whose notes are the new changelog section.
+4. In the same workflow run:
+   - **binaries**: [GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`)
+     builds static binaries for Linux, macOS, and Windows on amd64 and
+     arm64, and uploads `.tar.gz`/`.zip` archives and `checksums.txt` to
+     the release. Binaries report the tag in `vulnhound version`.
+   - **major-tag**: moves `v0` (later `v1`, …) to the new release, so
+     action users pinned to `@v0` get it automatically.
+
+These steps run in one workflow because tags and releases created with
+`GITHUB_TOKEN` do not trigger other workflows.
+
+#### How the version is chosen
+
+| Commits since last release | Before 1.0.0 | From 1.0.0 |
+|---|---|---|
+| `fix:`, `perf:`, `deps:`, `revert:` | patch (0.1.0 → 0.1.1) | patch (1.2.0 → 1.2.1) |
+| `feat:` | minor (0.1.0 → 0.2.0) | minor (1.2.0 → 1.3.0) |
+| `feat!:` or a `BREAKING CHANGE:` footer | minor (0.1.0 → 0.2.0) | major (1.2.0 → 2.0.0) |
+| only `docs:`, `ci:`, `chore:`, `test:`, `refactor:`, `build:`, `style:` | no release | no release |
+
+Before 1.0.0, breaking changes bump the minor version
+(`bump-minor-pre-major`). To release a specific version, for example the
+first `1.0.0`, add a footer to any commit merged to `main`:
+
+```
+Release-As: 1.0.0
+```
+
+#### Commit types and the changelog
+
+| Type | Use for | In CHANGELOG.md |
+|------|---------|-----------------|
+| `feat` | New user-facing behaviour | Features |
+| `fix` | Bug fixes | Bug Fixes |
+| `perf` | Performance improvements | Performance |
+| `deps` | Dependency updates (Renovate uses `deps(go):`) | Dependencies |
+| `revert` | Reverting an earlier commit | Reverts |
+| `docs`, `refactor`, `test`, `build`, `ci`, `chore`, `style` | Documentation and internal changes | hidden |
+
+Dependabot's GitHub Actions updates use `ci:`, so they never trigger a
+release on their own.
+
+#### One-time GitHub setup
+
+1. *Settings → Actions → General → Workflow permissions*: enable **Allow
+   GitHub Actions to create and approve pull requests**. release-please
+   cannot open its PR without it.
+2. *Settings → General → Pull Requests*: allow **squash merging** only, with
+   the default commit message set to **Pull request title**. With merge
+   commits, release-please would read every commit on the branch instead of
+   the checked PR title.
+3. *Recommended:* create a fine-grained token or GitHub App token with
+   *Contents* and *Pull requests* write access and save it as the
+   `RELEASE_PLEASE_TOKEN` secret. Pull requests opened with the default
+   `GITHUB_TOKEN` do not trigger workflows, so without it CI does not run on
+   the release PR. If branch protection requires CI checks, you will not be
+   able to merge the release PR without this token.
 
 ### Using vulnhound in your own pipeline
 
@@ -268,7 +347,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: vulnhound
-        uses: 0x48core/vulnhound@main # pin a release tag or commit SHA once available
+        uses: 0x48core/vulnhound@main # use @v0 once the first release (v0.1.0) is published
         with:
           fail-on: high
           skip-dev: true
@@ -323,11 +402,15 @@ It checks a vulnerable scan, a `fail-on` failure with outputs still set,
 
 #### Versioning the action
 
-Until the first release, consumers use `@main`. When releases start:
+Every release creates an exact tag (`v0.2.1`) and moves the major tag
+(`v0`, later `v1`) to it automatically (see [Releases](#releases)).
 
-1. Tag the release (`v1.0.0`) and move a major tag (`v1`) to the same
-   commit, so `@v1` users get fixes and features without breaking changes.
-2. Security-sensitive consumers can pin the full commit SHA instead;
-   Dependabot keeps SHA pins up to date.
-3. To list the action on the GitHub Marketplace, tick "Publish this Action
-   to the GitHub Marketplace" when creating the GitHub release.
+| Pin | Gets |
+|-----|------|
+| `@v0` / `@v1` | Every release in that major version |
+| `@v0.2.1` | Exactly that release |
+| `@<commit SHA>` | Exactly that commit, safest against tag tampering; Dependabot keeps SHA pins up to date |
+| `@main` | Unreleased code; avoid outside testing |
+
+To list the action on the GitHub Marketplace, edit a GitHub release created
+by release-please and tick "Publish this Action to the GitHub Marketplace".

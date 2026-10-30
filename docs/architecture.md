@@ -28,9 +28,11 @@ flowchart LR
     A1 --> D[Dedupe + sort]
     A2 --> D
     D -->|"[]Package"| M[Matcher<br/>OSV.dev]
-    M -->|"[]Finding"| R[Report]
+    M -->|"[]Finding"| I[Ignore rules<br/>.vulnhoundignore]
+    I -->|"kept + ignored"| R[Report]
     R --> O1[table]
     R --> O2[JSON]
+    R --> O3[SARIF]
 ```
 
 | Stage | Package | Input | Output |
@@ -38,6 +40,7 @@ flowchart LR
 | Source | `internal/source` | target reference | `*source.Target` (an `fs.FS` + name/type) |
 | Catalog | `internal/analyzer` | `fs.FS` + analyzers | `[]types.Package`, deduplicated and sorted |
 | Match | `internal/matcher` | `[]types.Package` | `[]types.Finding`, sorted by severity |
+| Ignore | `internal/ignore` | rules + `[]types.Finding` | kept findings, `[]types.IgnoredFinding` |
 | Report | `internal/report` | `*types.Report` | bytes in the chosen format |
 | Orchestration | `internal/scan` | `scan.Options` | `*types.Report` |
 | CLI | `cmd/vulnhound` | flags and args | exit code |
@@ -55,9 +58,11 @@ vulnhound/
 │   ├── source/           Source interface, Dir implementation
 │   ├── analyzer/         Analyzer interface, Catalog, gomod.go, npm.go
 │   ├── matcher/          Matcher interface, OSV client, CVSS v3 scoring
+│   ├── ignore/           .vulnhoundignore parsing and matching
 │   ├── purl/             Package URL builder
-│   ├── report/           table and JSON renderers
-│   └── scan/             pipeline orchestration
+│   ├── report/           table, JSON, and SARIF renderers; color theme
+│   ├── scan/             pipeline orchestration
+│   └── version/          per-ecosystem version comparison
 └── pkg/types/            Package, Finding, Severity, Report
 ```
 
@@ -77,13 +82,24 @@ classDiagram
         GeneratedAt time
         Packages []Package
         Findings []Finding
+        Ignored []IgnoredFinding
+        IgnoreFile string
+    }
+    class Location {
+        Path string
+        Line int
+    }
+    class IgnoredFinding {
+        Finding
+        Reason string
+        Until string
     }
     class Package {
         Name string
         Version string
         Ecosystem string
         PURL string
-        Locations []string
+        Locations []Location
         Direct bool
         Dev bool
         Key() string
@@ -101,6 +117,8 @@ classDiagram
     Report "1" --> "*" Package
     Report "1" --> "*" Finding
     Finding "1" --> "1" Package
+    Package "1" --> "*" Location
+    Report "1" --> "*" IgnoredFinding
 ```
 
 Notes on the fields:
@@ -112,8 +130,10 @@ Notes on the fields:
   the same package, wherever they were found. It is used for deduplication.
 - **`PURL`** is the cross-tool identifier (e.g. `pkg:npm/%40babel/core@7.20.0`).
   SBOM export will need it.
-- **`Locations`** lists every file the package was found in. In a monorepo
-  one package often appears in several lockfiles.
+- **`Locations`** lists every file the package was found in, with the
+  1-based line that declares it (`0`/omitted when unknown). In a monorepo
+  one package often appears in several lockfiles. SARIF creates one alert per
+  location, pointing at that line.
 - **`Direct`** is true if the package is a direct dependency in *any*
   location. **`Dev`** is true only if it is dev-only in *every* location.
   A package that is a dev dependency in one project but a runtime dependency
@@ -165,9 +185,11 @@ need `/etc/os-release` to know the distro version.
 
 `Catalog` runs in two phases:
 
-1. **Walk** the filesystem once, skipping `.git`, `node_modules`, and
-   `vendor`. For each regular file, ask every analyzer whether it matches,
-   and record a job for each match.
+1. **Walk** the filesystem once, skipping `.git`, `node_modules`, `vendor`,
+   and anything matching `Options.Exclude`. A pattern without `/` matches a
+   file or directory name at any depth; one with `/` matches the path from
+   the scan root (`path.Match` syntax). For each regular file, ask every
+   analyzer whether it matches, and record a job for each match.
 2. **Analyze** the jobs in parallel with an `errgroup`, limited to
    `GOMAXPROCS`. An analyzer error is logged as a warning and the job is
    dropped; only context cancellation stops the run.
@@ -364,6 +386,6 @@ are needed.
 - CVSS v4 vectors are not scored.
 - Go standard library vulnerabilities are not reported: the `go` directive
   in `go.mod` is a minimum version, not the toolchain actually used.
-- No line numbers in locations, which SARIF output will need.
-- No way to exclude paths, so scanning this repository's root reports its
-  own deliberately vulnerable test fixtures.
+- `--exclude` patterns use `path.Match`, so `**` is not supported.
+- Ignored findings are left out of SARIF rather than sent as SARIF
+  suppressions.

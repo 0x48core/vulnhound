@@ -47,6 +47,7 @@ func writeTable(w io.Writer, r *types.Report, opts Options) error {
 
 	if len(r.Findings) == 0 {
 		fmt.Fprintf(&b, "%s\n", s.paint("upgrade", "✔ No known vulnerabilities found."))
+		writeIgnored(&b, s, r)
 		_, err := io.WriteString(w, b.String())
 		return err
 	}
@@ -107,8 +108,27 @@ func writeTable(w io.Writer, r *types.Report, opts Options) error {
 		fmt.Fprintf(&b, "\n%s\n", s.paint("upgrade", fmt.Sprintf("Upgrading %s fixes %d of %s.",
 			plural(upgradable, "package"), fixable, plural(len(r.Findings), "vulnerability"))))
 	}
+	writeIgnored(&b, s, r)
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// writeIgnored notes suppressed findings, so they are never invisible.
+func writeIgnored(b *strings.Builder, s styler, r *types.Report) {
+	if len(r.Ignored) == 0 {
+		return
+	}
+	ids := make([]string, len(r.Ignored))
+	for i, f := range r.Ignored {
+		ids[i] = f.VulnID
+	}
+	const maxIDs = 5
+	list := strings.Join(ids[:min(len(ids), maxIDs)], ", ")
+	if len(ids) > maxIDs {
+		list += fmt.Sprintf(", +%d more", len(ids)-maxIDs)
+	}
+	fmt.Fprintf(b, "%s\n", s.paint("meta", fmt.Sprintf("Ignored %s by %s: %s",
+		plural(len(r.Ignored), "vulnerability"), r.IgnoreFile, list)))
 }
 
 // groupFindings groups findings by package, most severe package first.
@@ -221,7 +241,7 @@ func location(p types.Package) string {
 	case 0:
 		return "-"
 	case 1:
-		return p.Locations[0]
+		return p.Locations[0].String()
 	}
 	return fmt.Sprintf("%s (+%d)", p.Locations[0], len(p.Locations)-1)
 }

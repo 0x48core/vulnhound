@@ -30,3 +30,19 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+
+  # vulnhound scans itself. Results go to the Security tab on pushes to main;
+  # pull requests (including forks, which cannot write security events)
+  # only check the policy.
+  self-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        with:
+          exclude: testdata
+          fail-on: high
+          upload-sarif: ${{ github.event_name == 'push' }}

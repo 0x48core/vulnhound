@@ -31,18 +31,21 @@ vulnhound scan dir .                          # table output
 vulnhound scan dir ./myapp -f json -o report.json
 vulnhound scan dir . --fail-on high           # for CI: exit 1 on HIGH or CRITICAL
 vulnhound scan dir . --skip-dev               # ignore devDependencies
+vulnhound scan dir . --exclude testdata       # skip fixture directories
+vulnhound scan dir . -f sarif -o vulnhound.sarif           # for GitHub code scanning
+vulnhound scan dir . --sarif-output vulnhound.sarif        # table on screen + SARIF file
 ```
 
 ```
 Scanned 33 packages in /home/me/goledger
 Found 13 vulnerabilities in 3 packages: 2 critical · 1 low · 10 unknown
 
-github.com/jackc/pgx/v5 v5.7.5  → v5.9.2  Go · go.mod
+github.com/jackc/pgx/v5 v5.7.5  → v5.9.2  Go · go.mod:8
   CRITICAL  GHSA-9jj7-4m8r-rfcm  v5.9.0   Memory-safety vulnerability in github.com/jackc/pgx/v5.
   CRITICAL  GHSA-xgrm-4fwx-7qm8  v5.9.0   pgx contains memory-safety vulnerability
   LOW       GHSA-j88v-2chj-qfwx  v5.9.2   pgx: SQL Injection via placeholder confusion with dollar…
 
-golang.org/x/crypto v0.55.0  → v0.56.0 fixes 2 of 3  Go · go.mod · indirect
+golang.org/x/crypto v0.55.0  → v0.56.0 fixes 2 of 3  Go · go.mod:31 · indirect
   UNKNOWN   GO-2026-5932         no fix   The golang.org/x/crypto/openpgp package is unmaintained…
   UNKNOWN   GO-2026-6354         v0.56.0  Prevent DoS on deadlocked undecided channel in golang.org…
   ...
@@ -52,7 +55,53 @@ Upgrading 3 packages fixes 12 of 13 vulnerabilities.
 
 Findings are grouped by package, most severe first. Each package line shows
 the single upgrade that fixes the most findings (`→ v5.9.2`), or
-`no fix available`.
+`no fix available`, and the file and line that declare the package.
+
+### Output formats
+
+| Format | Use |
+|--------|-----|
+| `table` | Default; for people |
+| `json` | For scripts. Every package carries `locations: [{"path", "line"}]` |
+| `sarif` | [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) for GitHub code scanning: one alert per vulnerable package per file, pointing at the declaring line |
+
+SARIF file paths are written relative to the current directory when the
+scanned directory is inside it, so run the scan from the repository root and
+alerts link to the right files even when you scan a subdirectory.
+
+### Excluding paths
+
+`--exclude` (repeatable, or comma-separated) skips files and directories:
+
+| Pattern | Skips |
+|---------|-------|
+| `testdata` | Every file or directory named `testdata`, at any depth |
+| `*.min.js` | Matching file names at any depth |
+| `examples/legacy` | That path from the scan root (patterns with `/`) |
+| `services/*/fixtures` | `fixtures` under any direct child of `services` |
+
+Patterns use Go's [`path.Match`](https://pkg.go.dev/path#Match) syntax;
+`**` is not supported. `node_modules`, `vendor`, and `.git` are always
+skipped.
+
+### Ignoring accepted vulnerabilities
+
+Put a `.vulnhoundignore` file in the scanned directory (or pass
+`--ignore-file`). Each line names a vulnerability ID or any alias such as a
+CVE, optionally limited to one package and given an expiry date:
+
+```
+# Not reachable: we never parse untrusted HTML.
+GO-2026-6860
+CVE-2026-1234  pkg=github.com/jackc/pgx/v5  until=2026-12-31  # upgrade planned in Q4
+```
+
+Ignored findings don't count toward `--fail-on` and are left out of SARIF.
+They are still listed: in a line under the table and in the JSON `ignored`
+array with their reason. After its `until` date (UTC), a rule stops applying
+and vulnhound warns, so accepted risks get reviewed instead of hidden
+forever. A malformed line is an error, so a typo never silently fails to
+ignore, or ignores the wrong thing.
 
 ### Colors
 
@@ -126,27 +175,41 @@ into one finding.
 Use vulnhound in any repository's workflow:
 
 ```yaml
-- uses: actions/checkout@v4
-- uses: 0x48core/vulnhound@main # use @v0 once the first release (v0.1.0) is published
-  with:
-    fail-on: high
-    skip-dev: true
+permissions:
+  contents: read
+  security-events: write # only needed for upload-sarif
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: 0x48core/vulnhound@v0
+    with:
+      fail-on: high
+      skip-dev: true
+      exclude: testdata
+      upload-sarif: true
 ```
 
-The scan results appear as a table in the run's **Summary** tab, and a JSON
-report is written for later steps.
+The scan results appear as a table in the run's **Summary** tab, a JSON
+report is written for later steps, and with `upload-sarif` findings appear
+in the repository's **Security → Code scanning** tab and as pull request
+annotations. SARIF is uploaded even when `fail-on` fails the job.
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `path` | `.` | Directory to scan |
 | `fail-on` | *(empty)* | Fail at or above `low`, `medium`, `high`, or `critical` |
 | `skip-dev` | `false` | Ignore development-only dependencies |
+| `exclude` | *(empty)* | Paths to skip, separated by newlines or commas |
+| `ignore-file` | *(empty)* | Ignore file; defaults to `.vulnhoundignore` in `path` |
+| `sarif` | `false` | Also write a SARIF report |
+| `upload-sarif` | `false` | Upload SARIF to code scanning (implies `sarif`; needs `security-events: write`) |
 | `setup-go` | `true` | Install Go to build vulnhound; set `false` if the job already has Go 1.26+ |
 
 | Output | Description |
 |--------|-------------|
-| `findings` | Number of vulnerabilities found |
+| `findings` | Number of vulnerabilities found, excluding ignored ones |
 | `report` | Path to the JSON report |
+| `sarif` | Path to the SARIF report, when `sarif` or `upload-sarif` is set |
 
 The action builds vulnhound from its own source, so the scanner version always
 matches the action ref you pin. See [docs/workflow.md](docs/workflow.md#using-vulnhound-in-your-own-pipeline)
@@ -183,7 +246,8 @@ More detail:
 
 - [x] `scan dir` with Go and npm, OSV matching, table and JSON output, `--fail-on`
 - [x] GitHub Action with job summary and JSON report
-- [ ] 🚧 SARIF output for GitHub code scanning
+- [x] Colored table grouped by package with upgrade advice
+- [x] SARIF output and code scanning upload, `--exclude`, `.vulnhoundignore`
 - [ ] 🚧 `scan image`: container images (Alpine, Debian, Go binaries)
 - [ ] 🚧 Offline vulnerability database (SQLite cache of OSV dumps)
 - [ ] 🚧 PyPI, Cargo, Maven, RPM

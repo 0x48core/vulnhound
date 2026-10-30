@@ -1,5 +1,5 @@
 name: vulnhound scan
-description: Scan dependencies for known vulnerabilities using OSV.dev, with a job summary and a JSON report.
+description: Scan dependencies for known vulnerabilities using OSV.dev, with a job summary, JSON and SARIF reports.
 author: 0x48core
 branding:
   icon: shield
@@ -18,6 +18,22 @@ inputs:
     description: Ignore development-only dependencies.
     required: false
     default: "false"
+  exclude:
+    description: Files or directories to skip, separated by newlines or commas. A pattern without / matches a name at any depth (e.g. testdata).
+    required: false
+    default: ""
+  ignore-file:
+    description: File of accepted vulnerability IDs. Defaults to .vulnhoundignore in the scanned directory, if present.
+    required: false
+    default: ""
+  sarif:
+    description: Also write a SARIF report (see the sarif output).
+    required: false
+    default: "false"
+  upload-sarif:
+    description: "Upload the SARIF report to GitHub code scanning. Implies sarif. The job needs the security-events: write permission."
+    required: false
+    default: "false"
   setup-go:
     description: Install Go to build vulnhound. Set to false if the job has already set up Go 1.26 or newer.
     required: false
@@ -25,11 +41,14 @@ inputs:
 
 outputs:
   findings:
-    description: Number of vulnerabilities found.
+    description: Number of vulnerabilities found (ignored ones excluded).
     value: ${{ steps.scan.outputs.findings }}
   report:
     description: Absolute path to the JSON report.
     value: ${{ steps.scan.outputs.report }}
+  sarif:
+    description: Absolute path to the SARIF report, when sarif or upload-sarif is true.
+    value: ${{ steps.scan.outputs.sarif }}
 
 runs:
   using: composite
@@ -55,6 +74,8 @@ runs:
           -o "$bin_dir/vulnhound$(go env GOEXE)" ./cmd/vulnhound
         echo "$bin_dir" >> "$GITHUB_PATH"
 
+    # Never fails on findings: the exit code is an output, so SARIF can be
+    # uploaded before the last step fails the job.
     - name: Scan
       id: scan
       shell: bash
@@ -62,4 +83,27 @@ runs:
         SCAN_PATH: ${{ inputs.path }}
         FAIL_ON: ${{ inputs.fail-on }}
         SKIP_DEV: ${{ inputs.skip-dev }}
+        EXCLUDE: ${{ inputs.exclude }}
+        IGNORE_FILE: ${{ inputs.ignore-file }}
+        SARIF: ${{ inputs.sarif == 'true' || inputs.upload-sarif == 'true' }}
       run: bash "$GITHUB_ACTION_PATH/scripts/action-scan.sh"
+
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true' && steps.scan.outputs.sarif != '' && steps.scan.outputs.exit-code != '2'
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: vulnhound
+
+    - name: Check result
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit-code }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        case "$CODE" in
+          0) ;;
+          1) echo "::error title=vulnhound::vulnerabilities found at or above '$FAIL_ON'" ;;
+          *) echo "::error title=vulnhound::scan failed (exit code $CODE)" ;;
+        esac
+        exit "${CODE:-2}"

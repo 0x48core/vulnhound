@@ -21,7 +21,9 @@ flowchart TD
     B -- no --> X2[exit 2]
     B -- yes --> C[Open target<br/>source.Dir → fs.FS]
     C -- not found --> X2
-    C --> D[Walk files<br/>skip .git, node_modules, vendor]
+    C --> IG[Read .vulnhoundignore<br/>or --ignore-file]
+    IG -- malformed --> X2
+    IG --> D[Walk files<br/>skip .git, node_modules, vendor, --exclude]
     D --> E[Run matching analyzers in parallel]
     E -- malformed file --> W[log warning, skip file]
     E --> F[Merge duplicates, sort]
@@ -32,8 +34,9 @@ flowchart TD
     I -- no --> K
     I -- yes --> J[OSV: querybatch → fetch details<br/>→ merge aliases → severity + fix]
     J -- OSV error --> X2
-    J --> K[Render table or JSON<br/>to stdout or --output]
-    K --> L{--fail-on set and a finding<br/>at or above it?}
+    J --> IR[Apply ignore rules<br/>expired rules warn]
+    IR --> K[Render table, JSON, or SARIF<br/>+ optional --sarif-output]
+    K --> L{--fail-on set and a kept finding<br/>at or above it?}
     L -- yes --> X1[exit 1]
     L -- no --> X0[exit 0]
 ```
@@ -44,13 +47,15 @@ flowchart TD
 |---|------|------|-------|
 | 1 | Parse and validate flags | `cmd/vulnhound/scan.go` `runScan` | Unknown `--format` or `--fail-on` exits 2 before any I/O |
 | 2 | Open target | `source.Dir.Open` | Resolves to an absolute path; must be a directory |
-| 3 | Walk | `analyzer.Catalog` phase 1 | Builds a list of (analyzer, file) jobs |
-| 4 | Analyze | `analyzer.Catalog` phase 2 | Parallel; one bad file only produces a warning |
-| 5 | Deduplicate | `analyzer.dedupe` | Merge by ecosystem + name + version, union locations |
-| 6 | Filter | `scan.Run` | `--skip-dev` drops packages that are dev-only everywhere |
-| 7 | Match | `matcher.OSV.Match` | Skipped when there are no packages |
-| 8 | Report | `report.Write` | Grouped by package; colors per `--color` and `VULNHOUND_COLORS` |
-| 9 | Apply policy | `runScan` | `--fail-on` returns `errFindings` → exit 1 |
+| 3 | Load ignore rules | `scan.loadIgnore` | `--ignore-file`, else `.vulnhoundignore` at the scan root if present; a malformed line exits 2 |
+| 4 | Walk | `analyzer.Catalog` phase 1 | Builds a list of (analyzer, file) jobs; skips `--exclude` matches |
+| 5 | Analyze | `analyzer.Catalog` phase 2 | Parallel; records file and line; one bad file only produces a warning |
+| 6 | Deduplicate | `analyzer.dedupe` | Merge by ecosystem + name + version, union locations |
+| 7 | Filter | `scan.Run` | `--skip-dev` drops packages that are dev-only everywhere |
+| 8 | Match | `matcher.OSV.Match` | Skipped when there are no packages |
+| 9 | Ignore | `ignore.Apply` | Moves matching findings to `ignored`; rules past `until` warn and stop applying |
+| 10 | Report | `report.Write` | Table grouped by package, JSON, or SARIF; `--sarif-output` writes SARIF too |
+| 11 | Apply policy | `runScan` | `--fail-on` (kept findings only) returns `errFindings` → exit 1 |
 
 ### Debugging a scan
 
@@ -197,9 +202,18 @@ request:
 flowchart LR
     P[push / PR] --> T[test job]
     P --> L[lint job]
+    P --> SS[self-scan job]
     T --> T1[go vet] --> T2[go test -race] --> T3[make build]
     L --> L1[golangci-lint]
+    SS --> SS1[uses: ./ on this repo<br/>exclude testdata, fail-on high]
+    SS1 -- push to main --> SS2[upload SARIF to<br/>Security → Code scanning]
 ```
+
+The **self-scan** job runs the action on vulnhound itself, so a vulnerable
+dependency fails CI like it would for any user. On pushes to `main` it also
+uploads SARIF, so open alerts are listed under *Security → Code scanning*.
+Pull requests only check the policy, since workflows from forks cannot write
+security events.
 
 Both jobs use the Go version from `go.mod` and run in parallel.
 
@@ -340,6 +354,7 @@ on: [pull_request]
 
 permissions:
   contents: read
+  security-events: write # for upload-sarif
 
 jobs:
   scan:
@@ -347,9 +362,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: vulnhound
-        uses: 0x48core/vulnhound@main # use @v0 once the first release (v0.1.0) is published
+        uses: 0x48core/vulnhound@v0
         with:
           fail-on: high
+          exclude: testdata
+          upload-sarif: true # needs security-events: write
           skip-dev: true
       - if: always() && steps.vulnhound.outputs.report != ''
         uses: actions/upload-artifact@v4

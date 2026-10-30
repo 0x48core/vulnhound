@@ -5,11 +5,14 @@ package analyzer
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
+	"path"
 	"runtime"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -45,12 +48,44 @@ var skipDirs = map[string]bool{
 // Options controls a Catalog run.
 type Options struct {
 	Concurrency int // defaults to GOMAXPROCS
+
+	// Exclude lists path.Match patterns for files and directories to skip.
+	// A pattern without "/" matches any file or directory name at any depth
+	// ("testdata", "*.min.js"); a pattern with "/" matches the whole path
+	// from the scan root ("examples/legacy", "services/*/fixtures").
+	Exclude []string
+}
+
+// ValidateExclude reports the first malformed exclude pattern.
+func ValidateExclude(patterns []string) error {
+	for _, p := range patterns {
+		if _, err := path.Match(p, ""); err != nil {
+			return fmt.Errorf("invalid exclude pattern %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func excluded(p, name string, patterns []string) bool {
+	for _, pat := range patterns {
+		target := name
+		if strings.Contains(pat, "/") {
+			pat, target = strings.Trim(pat, "/"), p
+		}
+		if ok, _ := path.Match(pat, target); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Catalog walks fsys, runs every matching analyzer, and returns the
 // deduplicated packages sorted by ecosystem, name, and version. A failing
 // analyzer is logged and skipped so one malformed file cannot abort a scan.
 func Catalog(ctx context.Context, fsys fs.FS, analyzers []Analyzer, opts Options) ([]types.Package, error) {
+	if err := ValidateExclude(opts.Exclude); err != nil {
+		return nil, err
+	}
 	type job struct {
 		a    Analyzer
 		path string
@@ -60,6 +95,13 @@ func Catalog(ctx context.Context, fsys fs.FS, analyzers []Analyzer, opts Options
 		if err != nil {
 			slog.Warn("walk", "path", p, "err", err)
 			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if p != "." && excluded(p, d.Name(), opts.Exclude) {
+			slog.Debug("excluded", "path", p)
+			if d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
@@ -124,7 +166,7 @@ func dedupe(pkgs []types.Package) []types.Package {
 		existing, ok := byKey[p.Key()]
 		if !ok {
 			cp := p
-			cp.Locations = append([]string(nil), p.Locations...)
+			cp.Locations = append([]types.Location(nil), p.Locations...)
 			byKey[p.Key()] = &cp
 			order = append(order, p.Key())
 			continue
@@ -136,7 +178,13 @@ func dedupe(pkgs []types.Package) []types.Package {
 	out := make([]types.Package, 0, len(order))
 	for _, k := range order {
 		p := byKey[k]
-		sort.Strings(p.Locations)
+		sort.Slice(p.Locations, func(i, j int) bool {
+			a, b := p.Locations[i], p.Locations[j]
+			if a.Path != b.Path {
+				return a.Path < b.Path
+			}
+			return a.Line < b.Line
+		})
 		out = append(out, *p)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -152,7 +200,7 @@ func dedupe(pkgs []types.Package) []types.Package {
 	return out
 }
 
-func appendUnique(dst []string, src ...string) []string {
+func appendUnique[T comparable](dst []T, src ...T) []T {
 	for _, s := range src {
 		if !slices.Contains(dst, s) {
 			dst = append(dst, s)

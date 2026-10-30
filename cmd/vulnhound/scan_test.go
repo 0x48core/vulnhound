@@ -148,3 +148,108 @@ func TestScanDirFailOn(t *testing.T) {
 		t.Errorf("--fail-on bogus: err = %v, want a usage error", err)
 	}
 }
+
+func TestScanDirIgnoreFile(t *testing.T) {
+	osv := newFakeOSV(t)
+	dir := writeProject(t)
+	rules := "GHSA-p6mc-m468-83gw  pkg=lodash  # not reachable\n"
+	if err := os.WriteFile(filepath.Join(dir, ".vulnhoundignore"), []byte(rules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "--fail-on", "low")
+	if err != nil {
+		t.Fatalf("an ignored finding must not trip --fail-on: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "No known vulnerabilities") || !strings.Contains(out, "Ignored 1 vulnerability by .vulnhoundignore: GHSA-p6mc-m468-83gw") {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+
+	out, err = runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "-f", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r types.Report
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Findings) != 0 || len(r.Ignored) != 1 || r.Ignored[0].Reason != "not reachable" {
+		t.Errorf("findings=%+v ignored=%+v", r.Findings, r.Ignored)
+	}
+
+	// An explicit --ignore-file replaces the default, and a broken file fails fast.
+	bad := filepath.Join(t.TempDir(), "bad-ignore")
+	os.WriteFile(bad, []byte("GHSA-x until=never\n"), 0o644)
+	if _, err := runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "--ignore-file", bad); err == nil || !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("bad ignore file: err = %v, want a line-numbered error", err)
+	}
+}
+
+func TestScanDirExclude(t *testing.T) {
+	osv := newFakeOSV(t)
+	dir := writeProject(t)
+	fixture := filepath.Join(dir, "testdata", "old")
+	os.MkdirAll(fixture, 0o755)
+	os.WriteFile(filepath.Join(fixture, "go.mod"), []byte("module x\nrequire golang.org/x/text v0.3.0\n"), 0o644)
+
+	out, err := runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "--exclude", "testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Scanned 2 packages") {
+		t.Errorf("testdata/ should be excluded:\n%s", out)
+	}
+	if _, err := runCLI(t, "scan", "dir", dir, "--exclude", "[bad"); err == nil || !strings.Contains(err.Error(), "invalid exclude pattern") {
+		t.Errorf("--exclude [bad: err = %v", err)
+	}
+}
+
+func TestScanDirSARIF(t *testing.T) {
+	osv := newFakeOSV(t)
+	dir := writeProject(t)
+	out, err := runCLI(t, "scan", "dir", dir, "--osv-url", osv.URL, "-f", "sarif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Results []struct {
+				RuleID    string `json:"ruleId"`
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct{ URI string }    `json:"artifactLocation"`
+						Region           struct{ StartLine int } `json:"region"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &log); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v\n%s", err, out)
+	}
+	if log.Version != "2.1.0" || len(log.Runs) != 1 || len(log.Runs[0].Results) != 1 {
+		t.Fatalf("unexpected SARIF:\n%s", out)
+	}
+	loc := log.Runs[0].Results[0].Locations[0].PhysicalLocation
+	// The temp dir is outside the working directory, so URIs stay target-relative.
+	if loc.ArtifactLocation.URI != "package-lock.json" || loc.Region.StartLine != 3 {
+		t.Errorf("location = %+v, want package-lock.json line 3", loc)
+	}
+}
+
+func TestScanDirSARIFOutputAlongsideTable(t *testing.T) {
+	osv := newFakeOSV(t)
+	sarif := filepath.Join(t.TempDir(), "out.sarif")
+	out, err := runCLI(t, "scan", "dir", writeProject(t), "--osv-url", osv.URL, "--sarif-output", sarif)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Scanned 2 packages") {
+		t.Errorf("table should still go to stdout:\n%s", out)
+	}
+	data, err := os.ReadFile(sarif)
+	if err != nil || !strings.Contains(string(data), `"version": "2.1.0"`) {
+		t.Errorf("SARIF file not written: %v\n%s", err, data)
+	}
+}

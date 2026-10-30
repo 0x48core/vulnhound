@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/0x48core/vulnhound/internal/analyzer"
+	"github.com/0x48core/vulnhound/internal/ignore"
 	"github.com/0x48core/vulnhound/internal/matcher"
 	"github.com/0x48core/vulnhound/internal/report"
 	"github.com/0x48core/vulnhound/internal/scan"
@@ -27,6 +29,10 @@ type scanFlags struct {
 	color   string
 	noColor bool // deprecated alias for --color never
 	osvURL  string
+
+	exclude     []string
+	ignoreFile  string
+	sarifOutput string
 }
 
 var colorModes = []string{"auto", "always", "never"}
@@ -50,7 +56,8 @@ func newScanDirCmd() *cobra.Command {
 		Short: "Scan a local directory",
 		Example: `  vulnhound scan dir .
   vulnhound scan dir ./myapp --format json --output report.json
-  vulnhound scan dir . --fail-on high`,
+  vulnhound scan dir . --fail-on high
+  vulnhound scan dir . --exclude testdata --format sarif -o vulnhound.sarif`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
@@ -63,8 +70,11 @@ func newScanDirCmd() *cobra.Command {
 	fl := cmd.Flags()
 	fl.StringVarP(&f.format, "format", "f", "table", "output format: "+strings.Join(report.Formats, ", "))
 	fl.StringVarP(&f.output, "output", "o", "", "write the report to a file instead of stdout")
+	fl.StringVar(&f.sarifOutput, "sarif-output", "", "also write a SARIF report to this file, for GitHub code scanning")
 	fl.StringVar(&f.failOn, "fail-on", "", "exit with code 1 if any finding is at or above this severity (low, medium, high, critical)")
 	fl.BoolVar(&f.skipDev, "skip-dev", false, "ignore development-only dependencies")
+	fl.StringSliceVar(&f.exclude, "exclude", nil, "skip files and directories matching a pattern (repeatable); a pattern without / matches a name at any depth")
+	fl.StringVar(&f.ignoreFile, "ignore-file", "", "file of accepted vulnerability IDs (default: "+ignore.DefaultFile+" in the scanned directory, if present)")
 	fl.StringVar(&f.color, "color", "auto", "colorize table output: auto (when stdout is a terminal), always, never; customize with $"+colorsEnv)
 	fl.BoolVar(&f.noColor, "no-color", false, "same as --color never")
 	fl.StringVar(&f.osvURL, "osv-url", matcher.DefaultOSVURL, "OSV API base URL")
@@ -84,6 +94,9 @@ func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
 	if f.noColor {
 		f.color = "never"
 	}
+	if err := analyzer.ValidateExclude(f.exclude); err != nil {
+		return err
+	}
 	var threshold types.Severity
 	if f.failOn != "" {
 		var err error
@@ -100,6 +113,9 @@ func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
 		Analyzers: analyzer.Default(),
 		Matcher:   osv,
 		SkipDev:   f.skipDev,
+		Exclude:   f.exclude,
+
+		IgnoreFile: f.ignoreFile,
 	})
 	if err != nil {
 		return err
@@ -107,6 +123,13 @@ func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
 
 	if err := writeReport(cmd.OutOrStdout(), r, f); err != nil {
 		return err
+	}
+	if f.sarifOutput != "" {
+		sarif := f
+		sarif.format, sarif.output = "sarif", f.sarifOutput
+		if err := writeReport(io.Discard, r, sarif); err != nil {
+			return err
+		}
 	}
 
 	if f.failOn != "" {
@@ -133,7 +156,26 @@ func writeReport(stdout io.Writer, r *types.Report, f scanFlags) (err error) {
 		}()
 		w = file
 	}
-	return report.Write(w, f.format, r, renderOptions(w, f.color))
+	opts := renderOptions(w, f.color)
+	opts.ToolVersion = buildVersion()
+	opts.PathPrefix = sarifPathPrefix(r.Target)
+	return report.Write(w, f.format, r, opts)
+}
+
+// sarifPathPrefix makes SARIF locations relative to the working directory,
+// which is the repository root in CI, so code scanning can find the files
+// even when a subdirectory was scanned. Targets outside the working
+// directory keep paths relative to the target.
+func sarifPathPrefix(target string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(cwd, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 // renderOptions decides colors, hyperlinks, and width for w.

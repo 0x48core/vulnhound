@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,8 +11,8 @@ import (
 )
 
 func sampleReport() *types.Report {
-	pgx := types.Package{Name: "github.com/jackc/pgx/v5", Version: "v5.7.5", Ecosystem: "Go", Locations: []string{"go.mod"}, Direct: true}
-	crypto := types.Package{Name: "golang.org/x/crypto", Version: "v0.55.0", Ecosystem: "Go", Locations: []string{"go.mod", "tools/go.mod"}}
+	pgx := types.Package{Name: "github.com/jackc/pgx/v5", Version: "v5.7.5", Ecosystem: "Go", Locations: []types.Location{{Path: "go.mod", Line: 5}}, Direct: true}
+	crypto := types.Package{Name: "golang.org/x/crypto", Version: "v0.55.0", Ecosystem: "Go", Locations: []types.Location{{Path: "go.mod", Line: 9}, {Path: "tools/go.mod"}}}
 	return &types.Report{
 		Target:   "/src/app",
 		Packages: []types.Package{pgx, crypto, {Name: "clean", Version: "1.0.0", Ecosystem: "npm"}},
@@ -38,11 +39,11 @@ func TestTablePlain(t *testing.T) {
 	want := `Scanned 3 packages in /src/app
 Found 4 vulnerabilities in 2 packages: 1 critical · 1 low · 2 unknown
 
-github.com/jackc/pgx/v5 v5.7.5  → v5.9.2  Go · go.mod
+github.com/jackc/pgx/v5 v5.7.5  → v5.9.2  Go · go.mod:5
   CRITICAL  GHSA-9jj7-4m8r-rfcm  v5.9.0   Memory-safety vulnerability
   LOW       GHSA-j88v-2chj-qfwx  v5.9.2   SQL injection
 
-golang.org/x/crypto v0.55.0  → v0.56.0 fixes 1 of 2  Go · go.mod (+1) · indirect
+golang.org/x/crypto v0.55.0  → v0.56.0 fixes 1 of 2  Go · go.mod:9 (+1) · indirect
   UNKNOWN   GO-2026-5932         no fix   openpgp is unmaintained
   UNKNOWN   GO-2026-6354         v0.56.0  DoS on deadlocked channel
 
@@ -151,4 +152,64 @@ func stripANSI(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func TestSARIF(t *testing.T) {
+	r := sampleReport()
+	var buf bytes.Buffer
+	if err := Write(&buf, "sarif", r, Options{ToolVersion: "v9.9.9", PathPrefix: "services/api", Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	var log sarifLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatal(err)
+	}
+	run := log.Runs[0]
+	if run.Tool.Driver.Version != "v9.9.9" || len(run.Tool.Driver.Rules) != 4 {
+		t.Errorf("driver = %+v", run.Tool.Driver)
+	}
+	// crypto is declared in two files, so its 2 findings give 4 results.
+	if len(run.Results) != 6 {
+		t.Fatalf("got %d results, want 6", len(run.Results))
+	}
+	byRule := map[string]sarifRule{}
+	for _, rule := range run.Tool.Driver.Rules {
+		byRule[rule.ID] = rule
+	}
+	if got := byRule["GHSA-9jj7-4m8r-rfcm"]; got.Properties.SecuritySeverity != "9.5" || got.DefaultConfiguration.Level != "error" {
+		t.Errorf("critical rule = %+v", got)
+	}
+	if got := byRule["GO-2026-5932"]; got.Properties.SecuritySeverity != "" || got.DefaultConfiguration.Level != "warning" {
+		t.Errorf("unknown-severity rule = %+v", got)
+	}
+
+	seen := map[string]bool{}
+	for _, res := range run.Results {
+		loc := res.Locations[0].PhysicalLocation
+		seen[fmt.Sprintf("%s %s:%d", res.RuleID, loc.ArtifactLocation.URI, loc.Region.StartLine)] = true
+		if res.PartialFingerprints["vulnhound/v1"] == "" {
+			t.Errorf("%s: missing fingerprint", res.RuleID)
+		}
+	}
+	for _, want := range []string{
+		"GHSA-9jj7-4m8r-rfcm services/api/go.mod:5",
+		"GO-2026-5932 services/api/go.mod:9",
+		"GO-2026-5932 services/api/tools/go.mod:1", // unknown line falls back to 1
+	} {
+		if !seen[want] {
+			t.Errorf("missing result %q in %v", want, seen)
+		}
+	}
+	if strings.Contains(buf.String(), "\x1b") {
+		t.Error("SARIF must never contain escape codes")
+	}
+}
+
+func TestTableIgnoredFooter(t *testing.T) {
+	r := sampleReport()
+	r.Ignored = []types.IgnoredFinding{{Finding: types.Finding{VulnID: "GHSA-skip"}}}
+	r.IgnoreFile = ".vulnhoundignore"
+	if got := render(t, r, Options{}); !strings.HasSuffix(got, "Ignored 1 vulnerability by .vulnhoundignore: GHSA-skip\n") {
+		t.Errorf("missing ignored footer:\n%s", got)
+	}
 }

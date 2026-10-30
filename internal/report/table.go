@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -201,7 +202,7 @@ func groupHeader(s styler, g group) string {
 	}
 
 	meta := []string{g.pkg.Ecosystem, location(g.pkg)}
-	if !g.pkg.Direct {
+	if !g.pkg.Direct && declaredInManifest(g.pkg) {
 		meta = append(meta, "indirect")
 	}
 	if g.pkg.Dev {
@@ -272,4 +273,17 @@ func truncate(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n-1]) + "…"
+}
+
+// declaredInManifest reports whether the package comes from a dependency
+// manifest, where direct and indirect are meaningful. OS packages and
+// modules read from binaries have no such distinction.
+func declaredInManifest(p types.Package) bool {
+	for _, l := range p.Locations {
+		switch path.Base(l.Path) {
+		case "go.mod", "package-lock.json":
+			return true
+		}
+	}
+	return false
 }

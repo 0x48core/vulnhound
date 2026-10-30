@@ -18,6 +18,7 @@ import (
 	"github.com/0x48core/vulnhound/internal/report"
 	"github.com/0x48core/vulnhound/internal/scan"
 	"github.com/0x48core/vulnhound/internal/source"
+	"github.com/0x48core/vulnhound/internal/source/image"
 	"github.com/0x48core/vulnhound/pkg/types"
 )
 
@@ -45,7 +46,7 @@ func newScanCmd() *cobra.Command {
 		Use:   "scan",
 		Short: "Scan a target for vulnerabilities",
 	}
-	cmd.AddCommand(newScanDirCmd())
+	cmd.AddCommand(newScanDirCmd(), newScanImageCmd())
 	return cmd
 }
 
@@ -64,9 +65,69 @@ func newScanDirCmd() *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			}
-			return runScan(cmd, source.Dir{Path: path}, f)
+			return runScan(cmd, source.Dir{Path: path}, analyzer.Default(), f)
 		},
 	}
+	addScanFlags(cmd, &f)
+	return cmd
+}
+
+func newScanImageCmd() *cobra.Command {
+	var (
+		f        scanFlags
+		input    string
+		platform string
+	)
+	cmd := &cobra.Command{
+		Use:   "image [REF]",
+		Short: "Scan a container image from a registry or an image archive",
+		Long: `Scan a container image for vulnerable OS packages (Debian, Ubuntu, Alpine),
+Go binaries, and application lockfiles. No container runtime is needed:
+images are pulled from the registry directly, or read from a file saved
+with 'docker save' or an OCI layout tarball (--input).
+
+Registry credentials are read from the Docker config file
+(~/.docker/config.json or $DOCKER_CONFIG); credential helpers are not
+supported yet.`,
+		Example: `  vulnhound scan image nginx:1.25
+  vulnhound scan image ghcr.io/org/app:v1.2.0 --platform linux/arm64
+  docker save myapp:dev -o myapp.tar && vulnhound scan image --input myapp.tar
+  vulnhound scan image alpine:3.19 --fail-on critical --format sarif -o image.sarif`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if (len(args) == 1) == (input != "") {
+				return fmt.Errorf("give an image reference or --input FILE, not both")
+			}
+			plat := image.DefaultPlatform()
+			if platform != "" {
+				var err error
+				if plat, err = image.ParsePlatform(platform); err != nil {
+					return err
+				}
+			}
+			analyzers := analyzer.ForImage()
+			want := image.WantFunc(analyzer.Selector(analyzers))
+			var src source.Source = image.Archive{Path: input, Platform: plat, Want: want}
+			if len(args) == 1 {
+				src = image.Remote{Ref: args[0], Platform: plat, Want: want}
+			}
+			// The ignore file belongs to the project, not the image.
+			if f.ignoreFile == "" {
+				if _, err := os.Stat(ignore.DefaultFile); err == nil {
+					f.ignoreFile = ignore.DefaultFile
+				}
+			}
+			return runScan(cmd, src, analyzers, f)
+		},
+	}
+	addScanFlags(cmd, &f)
+	cmd.Flags().StringVar(&input, "input", "", "read the image from a 'docker save' or OCI layout tarball instead of a registry")
+	cmd.Flags().StringVar(&platform, "platform", "", "platform to scan in a multi-platform image, e.g. linux/arm64 (default linux/<host CPU>)")
+	return cmd
+}
+
+// addScanFlags registers the flags every scan target shares.
+func addScanFlags(cmd *cobra.Command, f *scanFlags) {
 	fl := cmd.Flags()
 	fl.StringVarP(&f.format, "format", "f", "table", "output format: "+strings.Join(report.Formats, ", "))
 	fl.StringVarP(&f.output, "output", "o", "", "write the report to a file instead of stdout")
@@ -80,10 +141,9 @@ func newScanDirCmd() *cobra.Command {
 	fl.StringVar(&f.osvURL, "osv-url", matcher.DefaultOSVURL, "OSV API base URL")
 	_ = fl.MarkHidden("osv-url")
 	_ = fl.MarkHidden("no-color")
-	return cmd
 }
 
-func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
+func runScan(cmd *cobra.Command, src source.Source, analyzers []analyzer.Analyzer, f scanFlags) error {
 	// Validate flags before doing any work.
 	if !slices.Contains(report.Formats, f.format) {
 		return fmt.Errorf("unknown format %q (supported: %s)", f.format, strings.Join(report.Formats, ", "))
@@ -110,7 +170,7 @@ func runScan(cmd *cobra.Command, src source.Source, f scanFlags) error {
 	osv.BaseURL = f.osvURL
 	r, err := scan.Run(cmd.Context(), scan.Options{
 		Source:    src,
-		Analyzers: analyzer.Default(),
+		Analyzers: analyzers,
 		Matcher:   osv,
 		SkipDev:   f.skipDev,
 		Exclude:   f.exclude,

@@ -48,6 +48,7 @@ func TestCVSS3BaseScore(t *testing.T) {
 type fakeOSV struct {
 	results map[string][][]string // name@version -> pages of IDs
 	vulns   map[string]string     // id -> JSON record
+	queries int                   // total queries received
 }
 
 func (f *fakeOSV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +71,7 @@ func (f *fakeOSV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var resp struct {
 			Results []result `json:"results"`
 		}
+		f.queries += len(req.Queries)
 		for _, q := range req.Queries {
 			pages := f.results[q.Package.Name+"@"+q.Version]
 			page := 0
@@ -189,5 +191,37 @@ func TestFixedVersionFallsBackToList(t *testing.T) {
 	p.Version = "not-semver"
 	if got := fixedVersion(p, &v); got != "1.2.0, 2.0.5" {
 		t.Errorf("fallback = %q, want both fixes", got)
+	}
+}
+
+func TestOSVMatchDistroSourcePackages(t *testing.T) {
+	fake := &fakeOSV{
+		results: map[string][][]string{"openssl@3.0.11-1~deb12u1": {{"DSA-5532-1"}}},
+		vulns: map[string]string{"DSA-5532-1": `{"id":"DSA-5532-1","summary":"openssl security update",
+			"affected":[{"package":{"ecosystem":"Debian:12","name":"openssl"},
+				"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"3.0.11-1~deb12u2"}]}]}]}`},
+	}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	o := NewOSV("")
+	o.BaseURL = srv.URL
+
+	pkg := func(name string) types.Package {
+		return types.Package{Name: name, Version: "3.0.11-1~deb12u1", Ecosystem: "Debian:12", SourceName: "openssl"}
+	}
+	findings, err := o.Match(context.Background(), []types.Package{pkg("libssl3"), pkg("openssl"), pkg("openssl-provider-legacy")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.queries != 1 {
+		t.Errorf("sent %d queries, want 1: packages from one source share a query", fake.queries)
+	}
+	if len(findings) != 3 {
+		t.Fatalf("got %d findings, want one per binary package", len(findings))
+	}
+	for _, f := range findings {
+		if f.FixedIn != "3.0.11-1~deb12u2" {
+			t.Errorf("%s: fixed = %q, want the Debian fixed version", f.Package.Name, f.FixedIn)
+		}
 	}
 }

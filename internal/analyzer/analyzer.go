@@ -32,9 +32,17 @@ type Analyzer interface {
 	Analyze(ctx context.Context, fsys fs.FS, path string) ([]types.Package, error)
 }
 
-// Default returns all built-in analyzers.
+// Default returns the analyzers for source directories: dependency
+// manifests and lockfiles.
 func Default() []Analyzer {
 	return []Analyzer{GoMod{}, NpmLock{}}
+}
+
+// ForImage returns the analyzers for container images and root
+// filesystems: OS package databases and Go binaries, plus the lockfiles
+// applications ship with.
+func ForImage() []Analyzer {
+	return append(Default(), Dpkg{}, Apk{}, GoBinary{})
 }
 
 // skipDirs are never descended into: they hold installed copies of
@@ -115,8 +123,18 @@ func Catalog(ctx context.Context, fsys fs.FS, analyzers []Analyzer, opts Options
 		if !d.Type().IsRegular() {
 			return nil
 		}
+		var info fs.FileInfo // stat lazily, only for FileMatchers
 		for _, a := range analyzers {
-			if a.Match(p) {
+			matched := a.Match(p)
+			if fm, ok := a.(FileMatcher); ok && !matched {
+				if info == nil {
+					if info, err = d.Info(); err != nil {
+						continue
+					}
+				}
+				matched = fm.MatchFile(p, info.Mode(), info.Size())
+			}
+			if matched {
 				jobs = append(jobs, job{a, p})
 			}
 		}
@@ -207,4 +225,24 @@ func appendUnique[T comparable](dst []T, src ...T) []T {
 		}
 	}
 	return dst
+}
+
+// Selector returns a predicate for the files any of the analyzers would
+// read, plus the os-release files distro analyzers need. Image sources use
+// it to extract only those files.
+func Selector(analyzers []Analyzer) func(path string, mode fs.FileMode, size int64) bool {
+	return func(p string, mode fs.FileMode, size int64) bool {
+		if slices.Contains(osReleasePaths, p) {
+			return true
+		}
+		for _, a := range analyzers {
+			if a.Match(p) {
+				return true
+			}
+			if fm, ok := a.(FileMatcher); ok && fm.MatchFile(p, mode, size) {
+				return true
+			}
+		}
+		return false
+	}
 }

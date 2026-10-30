@@ -46,7 +46,7 @@ flowchart TD
 | # | Step | Code | Notes |
 |---|------|------|-------|
 | 1 | Parse and validate flags | `cmd/vulnhound/scan.go` `runScan` | Unknown `--format` or `--fail-on` exits 2 before any I/O |
-| 2 | Open target | `source.Dir.Open` | Resolves to an absolute path; must be a directory |
+| 2 | Open target | `source.Dir.Open`, `image.Remote.Open`, `image.Archive.Open` | A directory, or an image pulled or read from a tarball and flattened into a temp dir (only the files analyzers need) |
 | 3 | Load ignore rules | `scan.loadIgnore` | `--ignore-file`, else `.vulnhoundignore` at the scan root if present; a malformed line exits 2 |
 | 4 | Walk | `analyzer.Catalog` phase 1 | Builds a list of (analyzer, file) jobs; skips `--exclude` matches |
 | 5 | Analyze | `analyzer.Catalog` phase 2 | Parallel; records file and line; one bad file only produces a warning |
@@ -147,9 +147,10 @@ Using Cargo (`Cargo.lock`) as an example:
 3. **Register.** Add `CargoLock{}` to `analyzer.Default()` in `analyzer.go`.
 4. **Ecosystem constant.** Add `EcosystemCargo = "crates.io"` to
    `pkg/types/types.go`.
-5. **Version comparison.** Cargo uses semver, so add it to the `case` in
-   `canonical` (`internal/matcher/osv.go`) to get precise `FixedIn` values.
-   For non-semver ecosystems, add a dedicated comparator instead.
+5. **Version comparison.** Cargo uses semver, so map `crates.io` to
+   `familySemver` in `family` (`internal/version/version.go`) to get precise
+   `FixedIn` values. For other schemes, add a comparator next to
+   `debian.go` and `alpine.go`.
 6. **Test.** Add a `TestCargoLock` table test next to the npm ones.
 7. **Docs.** Update the supported-files table in `README.md` and the
    analyzer table in `docs/architecture.md`.

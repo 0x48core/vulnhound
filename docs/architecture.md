@@ -57,7 +57,8 @@ vulnhound/
 ├── internal/
 │   ├── source/           Source interface, Dir implementation
 │   ├── analyzer/         Analyzer interface, Catalog, gomod.go, npm.go
-│   ├── matcher/          Matcher interface, OSV client, CVSS v3 scoring
+│   ├── matcher/          Matcher interface, OSV API and offline matchers, CVSS v3 scoring
+│   ├── osvdb/            local copy of the OSV database for --offline
 │   ├── ignore/           .vulnhoundignore parsing and matching
 │   ├── purl/             Package URL builder
 │   ├── report/           table, JSON, and SARIF renderers; color theme
@@ -317,6 +318,44 @@ that `go.mod` uses, although OSV stores them without it.
 vulnhound/<version>`, and up to 3 attempts on HTTP 429, 5xx, or network
 errors, waiting 1 s and then 2 s. Other 4xx responses fail immediately.
 
+#### Offline matching
+
+`matcher.Offline` (with `--offline`) reads records from `internal/osvdb`
+instead of the API and decides itself which ones apply, following the
+[OSV evaluation rules](https://ossf.github.io/osv-schema/#evaluation):
+
+1. A record applies when one of its `affected` entries names the package's
+   ecosystem and advisory name, and the advisory version is either in its
+   `versions` list or inside a `SEMVER` or `ECOSYSTEM` range.
+2. A range is evaluated by sorting its events by version (`introduced: 0`
+   first) and walking them: `introduced` at or below the version opens the
+   range, `fixed` at or below it closes it, `last_affected` below it closes
+   it. `GIT` ranges are ignored. A range with versions `internal/version`
+   cannot compare is treated as not affecting; the `versions` list still
+   applies.
+3. The matching records go through the same `findingsFor` as online
+   results, so alias merging, severity, and fixed versions are identical.
+
+Packages whose ecosystem dump is missing fail the scan with the exact
+`vulnhound db update ...` command to run, rather than silently reporting
+nothing. A dump older than 7 days produces a warning.
+
+`internal/osvdb` stores one dump per base ecosystem (`Debian` covers
+`Debian:11`, `Debian:12`, ...):
+
+| File | Contents |
+|------|----------|
+| `<Eco>/all.zip` | The OSV dump from `osv-vulnerabilities.storage.googleapis.com`, one JSON record per entry |
+| `<Eco>/index.json` | `"<ecosystem>\t<name>"` → zip entries that list that package, built once per update; withdrawn records are left out |
+| `<Eco>/meta.json` | ETag, update time, size, record count |
+
+`Update` sends `If-None-Match` with the stored ETag, downloads to a temp
+file while hashing it, compares the MD5 with Cloud Storage's
+`x-goog-hash` header, builds the index, and only then renames the new
+files into place, so a failed or interrupted update keeps the previous
+copy. A scan opens the zip once and reads only the entries the index
+lists for its packages.
+
 ### Report
 
 `report.Write(w, format, report, opts)` renders `table` or `json`.
@@ -421,9 +460,9 @@ help and validation pick it up automatically.
 
 ### Adding a matcher
 
-Implement `Matcher` (for example an offline SQLite-backed OSV database) and
-pass it in `scan.Options`. Matchers can be chained later if multiple sources
-are needed.
+Implement `Matcher` (as `OSV` and `Offline` do) and pass it in
+`scan.Options`. Matchers can be chained later if multiple sources are
+needed.
 
 ## Known limitations
 
@@ -433,8 +472,10 @@ are needed.
   supported. Debian testing/unstable (no `VERSION_ID`) is not supported.
 - Distro fixed versions are source package versions, so for a binary-only
   rebuild the table can show `1:2.38.1-5+b1 → 2.38.1-5+deb12u1`.
-- Online only: every scan needs network access to `api.osv.dev`.
-- No caching: vulnerability records are fetched again on every run.
+- Online scans fetch every vulnerability record on every run; use
+  `--offline` with `vulnhound db update` to avoid that.
+- The offline database is a set of zip dumps with an index, not a query
+  engine; it only supports the ecosystems vulnhound can scan.
 - CVSS v4 vectors are not scored.
 - Go standard library vulnerabilities are reported for Go binaries (their
   exact Go version is embedded) but not for `go.mod`, whose `go` directive is

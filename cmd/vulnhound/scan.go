@@ -34,6 +34,7 @@ type scanFlags struct {
 	exclude     []string
 	ignoreFile  string
 	sarifOutput string
+	offline     bool
 }
 
 var colorModes = []string{"auto", "always", "never"}
@@ -132,6 +133,7 @@ func addScanFlags(cmd *cobra.Command, f *scanFlags) {
 	fl.StringVarP(&f.format, "format", "f", "table", "output format: "+strings.Join(report.Formats, ", "))
 	fl.StringVarP(&f.output, "output", "o", "", "write the report to a file instead of stdout")
 	fl.StringVar(&f.sarifOutput, "sarif-output", "", "also write a SARIF report to this file, for GitHub code scanning")
+	fl.BoolVar(&f.offline, "offline", false, "match against the local database from `vulnhound db update` instead of the OSV API")
 	fl.StringVar(&f.failOn, "fail-on", "", "exit with code 1 if any finding is at or above this severity (low, medium, high, critical)")
 	fl.BoolVar(&f.skipDev, "skip-dev", false, "ignore development-only dependencies")
 	fl.StringSliceVar(&f.exclude, "exclude", nil, "skip files and directories matching a pattern (repeatable); a pattern without / matches a name at any depth")
@@ -166,12 +168,23 @@ func runScan(cmd *cobra.Command, src source.Source, analyzers []analyzer.Analyze
 		}
 	}
 
-	osv := matcher.NewOSV("vulnhound/" + buildVersion())
-	osv.BaseURL = f.osvURL
+	var m matcher.Matcher
+	if f.offline {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = db.Close() }()
+		m = &matcher.Offline{DB: db}
+	} else {
+		osv := matcher.NewOSV("vulnhound/" + buildVersion())
+		osv.BaseURL = f.osvURL
+		m = osv
+	}
 	r, err := scan.Run(cmd.Context(), scan.Options{
 		Source:    src,
 		Analyzers: analyzers,
-		Matcher:   osv,
+		Matcher:   m,
 		SkipDev:   f.skipDev,
 		Exclude:   f.exclude,
 

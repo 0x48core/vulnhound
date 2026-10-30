@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -335,4 +336,57 @@ func tarBytes(t *testing.T, files map[string]string) []byte {
 	}
 	tw.Close()
 	return buf.Bytes()
+}
+
+func TestDBUpdateStatusAndOfflineScan(t *testing.T) {
+	var dump bytes.Buffer
+	zw := zip.NewWriter(&dump)
+	w, _ := zw.Create("GHSA-p6mc-m468-83gw.json")
+	w.Write([]byte(`{"id":"GHSA-p6mc-m468-83gw","summary":"Prototype Pollution in lodash",
+		"database_specific":{"severity":"HIGH"},
+		"affected":[{"package":{"ecosystem":"npm","name":"lodash"},
+			"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"4.17.19"}]}]}]}`))
+	zw.Close()
+	bucket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/npm/all.zip" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("ETag", `"1"`)
+		w.Write(dump.Bytes())
+	}))
+	defer bucket.Close()
+	t.Setenv("VULNHOUND_DB_DIR", t.TempDir())
+	dir := writeProject(t)
+
+	// Before any update: a clear hint, not a network call.
+	if _, err := runCLI(t, "scan", "dir", dir, "--offline"); err == nil || !strings.Contains(err.Error(), "vulnhound db update npm") {
+		t.Errorf("offline without data: err = %v", err)
+	}
+	out, _ := runCLI(t, "db", "status")
+	if !strings.Contains(out, "No offline database") {
+		t.Errorf("status before update:\n%s", out)
+	}
+
+	out, err := runCLI(t, "db", "update", "NPM", "--url", bucket.URL)
+	if err != nil || !strings.Contains(out, "npm     updated:") || !strings.Contains(out, "1 advisories") {
+		t.Fatalf("update: %v\n%s", err, out)
+	}
+	out, _ = runCLI(t, "db", "status")
+	if !strings.Contains(out, "npm") || !strings.Contains(out, "ADVISORIES") {
+		t.Errorf("status:\n%s", out)
+	}
+
+	// The OSV API URL points nowhere: the scan must not use it.
+	out, err = runCLI(t, "scan", "dir", dir, "--offline", "--osv-url", "http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("offline scan: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "lodash 4.17.15  → 4.17.19") || !strings.Contains(out, "GHSA-p6mc-m468-83gw") {
+		t.Errorf("offline scan output:\n%s", out)
+	}
+
+	if _, err := runCLI(t, "db", "update", "pypi"); err == nil || !strings.Contains(err.Error(), "supported:") {
+		t.Errorf("unknown ecosystem: err = %v", err)
+	}
 }

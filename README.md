@@ -87,6 +87,25 @@ Multi-platform images default to `linux/<your CPU>`; pick another with
 best scanned with `docker save` and `--input`. A `.vulnhoundignore` in the
 current directory applies to image scans.
 
+### Offline scanning
+
+Download a local copy of the OSV database once, then scan without
+network access to OSV (an image scan still pulls the image):
+
+```bash
+vulnhound db update                  # Go, npm, Debian, Alpine: about 300 MB
+vulnhound db update Ubuntu           # Ubuntu on its own: about 770 MB
+vulnhound scan dir . --offline
+vulnhound db status                  # what is installed and how old it is
+```
+
+`db update` refreshes only dumps that changed upstream (by ETag) and
+verifies each download's MD5. Offline results are the same as online: the
+same OSV records, evaluated locally with the same version ordering.
+Scans warn when the database is more than 7 days old. The database lives
+in your user cache directory (`~/Library/Caches/vulnhound/osv` on macOS,
+`~/.cache/vulnhound/osv` on Linux), or in `$VULNHOUND_DB_DIR`.
+
 ### Output formats
 
 | Format | Use |
@@ -283,7 +302,7 @@ More detail:
 - [x] Colored table grouped by package with upgrade advice
 - [x] SARIF output and code scanning upload, `--exclude`, `.vulnhoundignore`
 - [x] `scan image`: container images (Debian, Ubuntu, Alpine, distroless, Go binaries)
-- [ ] 🚧 Offline vulnerability database (SQLite cache of OSV dumps)
+- [x] Offline vulnerability database (`vulnhound db update`, `--offline`)
 - [ ] 🚧 PyPI, Cargo, Maven; RPM-based images; zstd layers; credential helpers
 - [ ] 🚧 `scan repo` and secret detection
 - [ ] 🚧 SBOM export (CycloneDX, SPDX)

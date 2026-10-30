@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/0x48core/vulnhound/compare/v0.2.0...v0.3.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* in JSON output, package locations are now objects ({"path": "go.mod", "line": 8}) instead of strings.
+
+### Features
+
+* add SARIF output, ignore file, and path excludes ([bf83eb3](https://github.com/0x48core/vulnhound/commit/bf83eb3e8e0b655125b5add516546a62f7a8c2e1))
+
 ## [0.2.0](https://github.com/0x48core/vulnhound/compare/v0.1.0...v0.2.0) (2026-10-29)
 
 

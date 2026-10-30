@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/0x48core/vulnhound/compare/v0.3.0...v0.4.0) (2026-10-30)
+
+
+### Features
+
+* scan container images for OS packages and Go binaries ([b66aef1](https://github.com/0x48core/vulnhound/commit/b66aef122358e6874eae51f68c18ab7e79469876))
+* scan container images for OS packages and Go binaries ([a4923c3](https://github.com/0x48core/vulnhound/commit/a4923c3527d2156bc76c4a9a41f9bede99bb451b))
+
 ## [0.3.0](https://github.com/0x48core/vulnhound/compare/v0.2.0...v0.3.0) (2026-10-30)
 
 

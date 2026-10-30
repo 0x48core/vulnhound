@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/0x48core/vulnhound/compare/v0.4.0...v0.5.0) (2026-10-30)
+
+
+### Features
+
+* add offline vulnerability database and --offline scans ([c990a2d](https://github.com/0x48core/vulnhound/commit/c990a2d58aabd18a12ec56c14d04fab64d6e0301))
+* add offline vulnerability database and --offline scans ([ac1994f](https://github.com/0x48core/vulnhound/commit/ac1994f8cf48133f09a2e2df3fd87ab9f5c61d53))
+
 ## [0.4.0](https://github.com/0x48core/vulnhound/compare/v0.3.0...v0.4.0) (2026-10-30)
 
 

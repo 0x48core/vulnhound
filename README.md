@@ -4,8 +4,9 @@ Fast, single-binary security scanner written in Go. vulnhound finds your
 dependencies, checks them against [OSV.dev](https://osv.dev), and reports
 known vulnerabilities with the version that fixes them.
 
-> **Status: early MVP.** Directory scanning for Go and npm works today.
-> See the [roadmap](#roadmap) for what is coming.
+> **Status: early.** Source directories (Go, npm) and container images
+> (Debian, Ubuntu, Alpine, Go binaries) work today. See the
+> [roadmap](#roadmap) for what is coming.
 
 ## Install
 
@@ -56,6 +57,35 @@ Upgrading 3 packages fixes 12 of 13 vulnerabilities.
 Findings are grouped by package, most severe first. Each package line shows
 the single upgrade that fixes the most findings (`→ v5.9.2`), or
 `no fix available`, and the file and line that declare the package.
+
+### Scanning container images
+
+```bash
+vulnhound scan image nginx:1.25                       # pull from Docker Hub
+vulnhound scan image ghcr.io/org/app:v1.2.0 --platform linux/arm64
+docker save myapp:dev -o myapp.tar
+vulnhound scan image --input myapp.tar                # docker save or OCI layout tarball
+```
+
+No Docker daemon is needed: vulnhound talks to the registry API directly,
+verifies every layer against its sha256 digest, and extracts only the files
+it analyzes (package databases and executables), not the whole image. It
+finds:
+
+- **OS packages** from `dpkg` (Debian, Ubuntu, and distroless images) and
+  `apk` (Alpine), matched against the distro's own advisories by **source
+  package**: a fix in `openssl` is reported on `libssl3`, `libcrypto3`, and
+  every other package built from it.
+- **Go binaries**: the module versions and Go version embedded in every Go
+  executable, so images that ship only a binary are covered too.
+- **Lockfiles** the application ships with (`go.mod`, `package-lock.json`).
+
+Multi-platform images default to `linux/<your CPU>`; pick another with
+`--platform`. Registry credentials come from `~/.docker/config.json` (or
+`$DOCKER_CONFIG`) when stored inline; credential helpers such as
+`osxkeychain` are not supported yet, so private images on such setups are
+best scanned with `docker save` and `--input`. A `.vulnhoundignore` in the
+current directory applies to image scans.
 
 ### Output formats
 
@@ -159,6 +189,9 @@ breaks the output. JSON output never contains color codes.
 |-----------|------|-------|
 | Go | `go.mod` | Honors `replace`; local-path replacements are skipped |
 | npm | `package-lock.json` | lockfileVersion 1, 2, and 3; aliases and dev deps |
+| Debian, Ubuntu | `var/lib/dpkg/status`, `var/lib/dpkg/status.d/*` | Images only; matched by source package and version |
+| Alpine | `lib/apk/db/installed` | Images only; matched by origin package |
+| Go binaries | any executable built by Go | Images only; includes the Go standard library (`stdlib`) |
 
 `node_modules/`, `vendor/`, and `.git/` are not scanned.
 
@@ -219,8 +252,9 @@ for more examples.
 
 ```
 Source ──► Analyzers ──► Packages ──► Matcher ──► Reporter
-(dir)      (go.mod,      (deduped)    (OSV.dev    (table,
-           package-lock)               API)        JSON)
+(dir,      (go.mod, npm, (deduped)    (OSV.dev    (table,
+ image)     dpkg, apk,                 API)        JSON, SARIF)
+            Go binaries)
 ```
 
 Every source exposes an `fs.FS`, so analyzers work the same whether files
@@ -229,10 +263,10 @@ come from a directory, a Git clone, or a container image.
 | Path | Purpose |
 |------|---------|
 | `cmd/vulnhound` | CLI (cobra) |
-| `internal/source` | Targets exposed as `fs.FS` |
+| `internal/source` | Targets exposed as `fs.FS`; `source/image` pulls and flattens images |
 | `internal/analyzer` | Per-ecosystem package detection |
 | `internal/matcher` | OSV lookup, alias merging, CVSS scoring, fixed versions |
-| `internal/report` | Table and JSON output |
+| `internal/report` | Table, JSON, and SARIF output |
 | `pkg/types` | Public data model: `Package`, `Finding`, `Report` |
 
 More detail:
@@ -248,9 +282,9 @@ More detail:
 - [x] GitHub Action with job summary and JSON report
 - [x] Colored table grouped by package with upgrade advice
 - [x] SARIF output and code scanning upload, `--exclude`, `.vulnhoundignore`
-- [ ] 🚧 `scan image`: container images (Alpine, Debian, Go binaries)
+- [x] `scan image`: container images (Debian, Ubuntu, Alpine, distroless, Go binaries)
 - [ ] 🚧 Offline vulnerability database (SQLite cache of OSV dumps)
-- [ ] 🚧 PyPI, Cargo, Maven, RPM
+- [ ] 🚧 PyPI, Cargo, Maven; RPM-based images; zstd layers; credential helpers
 - [ ] 🚧 `scan repo` and secret detection
 - [ ] 🚧 SBOM export (CycloneDX, SPDX)
 

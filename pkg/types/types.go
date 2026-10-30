@@ -25,6 +25,28 @@ type Package struct {
 	Locations []Location `json:"locations"`
 	Direct    bool       `json:"direct"`
 	Dev       bool       `json:"dev,omitempty"`
+
+	// SourceName and SourceVersion identify the distro source package a
+	// binary package was built from (e.g. libssl3 from openssl). Debian,
+	// Ubuntu, and Alpine advisories are published per source package.
+	SourceName    string `json:"source_name,omitempty"`
+	SourceVersion string `json:"source_version,omitempty"`
+}
+
+// AdvisoryName is the name advisories use for this package.
+func (p Package) AdvisoryName() string {
+	if p.SourceName != "" {
+		return p.SourceName
+	}
+	return p.Name
+}
+
+// AdvisoryVersion is the version advisories use for this package.
+func (p Package) AdvisoryVersion() string {
+	if p.SourceVersion != "" {
+		return p.SourceVersion
+	}
+	return p.Version
 }
 
 // Location is where a package was declared: a slash-separated path relative

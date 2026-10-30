@@ -138,6 +138,11 @@ Notes on the fields:
   location. **`Dev`** is true only if it is dev-only in *every* location.
   A package that is a dev dependency in one project but a runtime dependency
   in another is therefore treated as a runtime dependency.
+- **`SourceName` / `SourceVersion`** are set for distro packages: Debian,
+  Ubuntu, and Alpine publish advisories per source package (`openssl`),
+  not per binary package (`libssl3`). The matcher queries OSV with
+  `AdvisoryName()` / `AdvisoryVersion()`, and packages that share a source
+  share one query.
 - **`Severity`** is an ordered integer (`UNKNOWN < LOW < MEDIUM < HIGH <
   CRITICAL`), so `--fail-on` is a simple comparison. It is written to JSON
   as a string.
@@ -164,9 +169,39 @@ files through `fs.FS` only, so they never know whether the files came from a
 directory, a Git clone, or a flattened container image. They can also be
 tested with an in-memory `fstest.MapFS` instead of real files.
 
-Implemented: `Dir` (wraps `os.DirFS`). Planned: `Image` (flattened layers
-from go-containerregistry, with whiteout handling) and `Repo` (go-git clone
-into a temp dir).
+Implemented: `Dir` (wraps `os.DirFS`), and `image.Remote` / `image.Archive`
+in `internal/source/image`. Planned: `Repo` (clone into a temp dir).
+
+#### Images
+
+Image support uses only the standard library, so the binary keeps its
+single-file, no-runtime design.
+
+```mermaid
+flowchart LR
+    R[image ref] --> P[ParseReference<br/>docker.io defaults]
+    P --> A[registry auth<br/>Bearer token or Docker config]
+    A --> M[manifest or index]
+    M -->|index| PL[select --platform]
+    PL --> M2[image manifest]
+    M -->|manifest| M2
+    T[--input tarball] --> AR[docker save manifest.json<br/>or OCI index.json]
+    AR --> L
+    M2 --> L[layers, bottom first<br/>sha256-verified while streaming]
+    L --> F[flattener<br/>whiteouts, opaque dirs]
+    F --> D[temp dir with wanted files only]
+    D --> FS[os.DirFS → analyzers]
+```
+
+| Piece | File | Notes |
+|-------|------|-------|
+| Reference parsing | `reference.go` | `nginx` → `docker.io/library/nginx:latest`; registry hosts are first components with `.` or `:` or `localhost`; digests are validated |
+| Registry client | `registry.go` | OCI Distribution API. On `401` it answers the `Bearer` challenge with a pull-scoped token (anonymous, or using inline credentials from the Docker config). Manifests fetched by digest are verified; blobs are hashed while streaming and fail at EOF on mismatch |
+| Archives | `archive.go` | `docker save` (`manifest.json`) and OCI layouts (`index.json`). Entries are indexed once and read in place with `io.SectionReader`; a gzipped tarball is decompressed to a temp file first |
+| Layers | `manifest.go` | Compression is detected from magic bytes; gzip and uncompressed tar are supported, zstd is rejected with a clear error |
+| Flattening | `flatten.go` | Applies layers in order. `.wh.NAME` deletes a lower-layer path, `.wh..wh..opq` empties a directory. Only files the analyzers want (`analyzer.Selector`) are written. Entry names are cleaned as absolute paths, so `..` cannot escape the temp dir. Symlinks and hard links are never created: they are resolved inside the image after all layers and the target's content is copied, so a link cannot reach host files |
+
+The temporary directory is removed by `Target.Close`.
 
 ### Analyzers and Catalog
 
@@ -197,10 +232,19 @@ need `/etc/os-release` to know the distro version.
 Results are then merged by `Package.Key()` and sorted by ecosystem, name,
 and version.
 
+Analyzers are grouped by target: `analyzer.Default()` (manifests, for
+`scan dir`) and `analyzer.ForImage()` (adds `Dpkg`, `Apk`, `GoBinary`).
+Analyzers that select files by type rather than name implement
+`FileMatcher`, which `Catalog` calls with the file's mode and size; that is
+how `GoBinary` finds executables without reading every file.
+
 | Analyzer | File | Behaviour |
 |----------|------|-----------|
 | `GoMod` | `go.mod` | Reads `require` lines and applies `replace` directives. Local-path replacements are skipped because there is nothing to look up. Uses `modfile.Parse`, not `ParseLax`, because `ParseLax` drops `replace`. `go.sum` is deliberately ignored because it lists versions that are not part of the build. |
 | `NpmLock` | `package-lock.json` | v2/v3: reads the flat `packages` map, derives the name from the last `node_modules/` segment (or the `name` field for aliases), and skips the root, workspace members, and links. v1: walks the nested `dependencies` tree and decodes `npm:real@version` aliases. Non-registry versions (`git+ssh:`, `file:`) are skipped. |
+| `Dpkg` | `var/lib/dpkg/status`, `var/lib/dpkg/status.d/*` | Debian control paragraphs; skips packages whose `Status` is not `installed` (distroless `status.d` files have no status and count as installed). `Source: openssl (3.0.11-1)` sets `SourceName`/`SourceVersion`. The ecosystem (`Debian:12`, `Ubuntu:22.04:LTS`) comes from `os-release` |
+| `Apk` | `lib/apk/db/installed` | Blocks of `P:` name, `V:` version, `o:` origin (the source package). Ecosystem `Alpine:vMAJOR.MINOR` from `os-release` |
+| `GoBinary` | executables of 64 KiB–512 MiB (`FileMatcher`) | `debug/buildinfo` reads the embedded main module, dependencies (following `replace`), and Go version, reported as `stdlib`. Non-Go executables are skipped silently |
 
 ### Matcher
 
@@ -260,8 +304,11 @@ Otherwise it is `UNKNOWN`. This is common for Go vulnerability database
 entries with no GitHub advisory alias. CVSS v4 vectors are not scored yet.
 
 **Fixed version** is the `fixed` event that closes the affected range
-containing the installed version. Go and npm versions are compared with
-`golang.org/x/mod/semver` after normalising to `vX.Y.Z`. When versions can't
+containing the installed version. Versions are compared per ecosystem by
+`internal/version`: Go and npm with `golang.org/x/mod/semver` after
+normalising to `vX.Y.Z`, Debian and Ubuntu with dpkg's ordering (epochs,
+`~` sorting before everything), and Alpine with apk's ordering (`_rc`,
+`_p` suffixes, `-rN` revisions). When versions can't
 be compared, or no range contains the version, every fixed version is listed
 instead (`1.2.0, 2.0.5`). Go fixed versions are shown with the `v` prefix
 that `go.mod` uses, although OSV stores them without it.
@@ -356,10 +403,10 @@ work on every platform.
    OSV ecosystem name for `Ecosystem` and `purl.Build` for `PURL`.
 2. Add it to `analyzer.Default()`.
 3. Add fixtures under `internal/analyzer/testdata/<name>/` and a test.
-4. If the ecosystem's versions are not semver (PyPI, Maven, Debian, RPM,
-   Alpine), extend `canonical` in `internal/matcher/osv.go` or add a
-   comparator. Until you do, findings still work but `FixedIn` lists every
-   fixed version.
+4. If the ecosystem's versions are not semver or dpkg/apk style (PyPI,
+   Maven, RPM), add a comparator to `internal/version` and map the
+   ecosystem in `family`. Until you do, findings still work but `FixedIn`
+   lists every fixed version.
 
 ### Adding a source
 
@@ -380,12 +427,18 @@ are needed.
 
 ## Known limitations
 
-- Only directory targets, and only Go and npm.
+- Ecosystems: Go, npm, Debian, Ubuntu, Alpine, and Go binaries. No PyPI,
+  Cargo, Maven, or RPM-based images yet.
+- Images: zstd-compressed layers and Docker credential helpers are not
+  supported. Debian testing/unstable (no `VERSION_ID`) is not supported.
+- Distro fixed versions are source package versions, so for a binary-only
+  rebuild the table can show `1:2.38.1-5+b1 → 2.38.1-5+deb12u1`.
 - Online only: every scan needs network access to `api.osv.dev`.
 - No caching: vulnerability records are fetched again on every run.
 - CVSS v4 vectors are not scored.
-- Go standard library vulnerabilities are not reported: the `go` directive
-  in `go.mod` is a minimum version, not the toolchain actually used.
+- Go standard library vulnerabilities are reported for Go binaries (their
+  exact Go version is embedded) but not for `go.mod`, whose `go` directive is
+  only a minimum version.
 - `--exclude` patterns use `path.Match`, so `**` is not supported.
 - Ignored findings are left out of SARIF rather than sent as SARIF
   suppressions.

@@ -141,14 +141,45 @@ func (o *OSV) Match(ctx context.Context, pkgs []types.Package) ([]types.Finding,
 	return findings, nil
 }
 
-// queryIDs returns, for each package, the IDs of vulnerabilities affecting
-// it, following next_page_token until every query is exhausted.
-func (o *OSV) queryIDs(ctx context.Context, pkgs []types.Package) ([][]string, error) {
-	ids := make([][]string, len(pkgs))
-	for start := 0; start < len(pkgs); start += osvBatchLimit {
-		end := min(start+osvBatchLimit, len(pkgs))
+// advisoryKey is what OSV is queried with: distro packages use their
+// source package, so many binary packages can share one query.
+type advisoryKey struct{ ecosystem, name, version string }
 
-		// pending maps a position in the current request to a package index.
+// queryIDs returns, for each package, the IDs of vulnerabilities affecting
+// it. Packages with the same advisory key are queried once.
+func (o *OSV) queryIDs(ctx context.Context, pkgs []types.Package) ([][]string, error) {
+	var keys []advisoryKey
+	index := make(map[advisoryKey]int)
+	keyOf := make([]int, len(pkgs))
+	for i, p := range pkgs {
+		k := advisoryKey{p.Ecosystem, p.AdvisoryName(), p.AdvisoryVersion()}
+		ki, ok := index[k]
+		if !ok {
+			ki = len(keys)
+			index[k] = ki
+			keys = append(keys, k)
+		}
+		keyOf[i] = ki
+	}
+	keyIDs, err := o.queryKeys(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([][]string, len(pkgs))
+	for i := range pkgs {
+		ids[i] = keyIDs[keyOf[i]]
+	}
+	return ids, nil
+}
+
+// queryKeys returns the vulnerability IDs for each key, following
+// next_page_token until every query is exhausted.
+func (o *OSV) queryKeys(ctx context.Context, keys []advisoryKey) ([][]string, error) {
+	ids := make([][]string, len(keys))
+	for start := 0; start < len(keys); start += osvBatchLimit {
+		end := min(start+osvBatchLimit, len(keys))
+
+		// pending maps a position in the current request to a key index.
 		pending := make([]int, 0, end-start)
 		tokens := make(map[int]string)
 		for i := start; i < end; i++ {
@@ -160,8 +191,8 @@ func (o *OSV) queryIDs(ctx context.Context, pkgs []types.Package) ([][]string, e
 			}{Queries: make([]osvQuery, len(pending))}
 			for qi, pi := range pending {
 				req.Queries[qi] = osvQuery{
-					Package:   osvQueryPackage{Name: pkgs[pi].Name, Ecosystem: pkgs[pi].Ecosystem},
-					Version:   pkgs[pi].Version,
+					Package:   osvQueryPackage{Name: keys[pi].name, Ecosystem: keys[pi].ecosystem},
+					Version:   keys[pi].version,
 					PageToken: tokens[pi],
 				}
 			}
@@ -402,10 +433,11 @@ func severityOf(h osvSeverityHolder) (types.Severity, bool) {
 // cannot be compared, or no range contains p.Version (OSV may match on an
 // explicit version list), it lists every fixed version instead.
 func fixedVersion(p types.Package, v *osvVuln) string {
-	comparable := version.Comparable(p.Ecosystem, p.Version)
+	name, current := p.AdvisoryName(), p.AdvisoryVersion()
+	comparable := version.Comparable(p.Ecosystem, current)
 	var all []string
 	for _, a := range v.Affected {
-		if a.Package.Name != p.Name || a.Package.Ecosystem != p.Ecosystem {
+		if a.Package.Name != name || a.Package.Ecosystem != p.Ecosystem {
 			continue
 		}
 		for _, r := range a.Ranges {
@@ -419,7 +451,7 @@ func fixedVersion(p types.Package, v *osvVuln) string {
 					introduced = e.Introduced
 				case e.Fixed != "":
 					all = append(all, e.Fixed)
-					if comparable && inRange(p.Ecosystem, p.Version, introduced, e.Fixed) {
+					if comparable && inRange(p.Ecosystem, current, introduced, e.Fixed) {
 						return displayVersion(p.Ecosystem, e.Fixed)
 					}
 				}

@@ -20,6 +20,11 @@ type Target struct {
 	closer func() error
 }
 
+// NewTarget returns a target whose Close calls closer (may be nil).
+func NewTarget(name, typ string, fsys fs.FS, closer func() error) *Target {
+	return &Target{Name: name, Type: typ, FS: fsys, closer: closer}
+}
+
 // Close releases any resources held by the target (temp dirs, layer files).
 func (t *Target) Close() error {
 	if t.closer == nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -252,4 +254,85 @@ func TestScanDirSARIFOutputAlongsideTable(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), `"version": "2.1.0"`) {
 		t.Errorf("SARIF file not written: %v\n%s", err, data)
 	}
+}
+
+func TestScanImageArchive(t *testing.T) {
+	osv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/querybatch":
+			var req struct {
+				Queries []struct {
+					Package struct{ Name, Ecosystem string } `json:"package"`
+					Version string                           `json:"version"`
+				} `json:"queries"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			var results []string
+			for _, q := range req.Queries {
+				// Alpine advisories are looked up by origin (source package).
+				if q.Package.Ecosystem == "Alpine:v3.19" && q.Package.Name == "openssl" && q.Version == "3.1.4-r2" {
+					results = append(results, `{"vulns":[{"id":"ALPINE-CVE-2024-5535"}]}`)
+				} else {
+					results = append(results, `{}`)
+				}
+			}
+			w.Write([]byte(`{"results":[` + strings.Join(results, ",") + `]}`))
+		case "/v1/vulns/ALPINE-CVE-2024-5535":
+			w.Write([]byte(`{"id":"ALPINE-CVE-2024-5535","severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"}],
+				"affected":[{"package":{"ecosystem":"Alpine:v3.19","name":"openssl"},
+					"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"3.1.6-r0"}]}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer osv.Close()
+
+	// A one-layer image saved in the `docker save` format.
+	layer := tarBytes(t, map[string]string{
+		"etc/os-release":       "ID=alpine\nVERSION_ID=3.19.0\n",
+		"lib/apk/db/installed": "P:libssl3\nV:3.1.4-r2\no:openssl\n\nP:musl\nV:1.2.4-r2\no:musl\n",
+		"usr/share/doc/big":    "not extracted",
+	})
+	archive := filepath.Join(t.TempDir(), "app.tar")
+	os.WriteFile(archive, tarBytes(t, map[string]string{
+		"manifest.json": `[{"RepoTags":["app:dev"],"Layers":["l1/layer.tar"]}]`,
+		"l1/layer.tar":  string(layer),
+	}), 0o644)
+
+	out, err := runCLI(t, "scan", "image", "--input", archive, "--osv-url", osv.URL, "--fail-on", "high")
+	if !errors.Is(err, errFindings) {
+		t.Fatalf("err = %v, want errFindings\n%s", err, out)
+	}
+	for _, want := range []string{"Scanned 2 packages in app:dev", "libssl3 3.1.4-r2  → 3.1.6-r0  Alpine:v3.19 · lib/apk/db/installed:1", "CRITICAL"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "indirect") {
+		t.Errorf("OS packages must not be tagged indirect:\n%s", out)
+	}
+
+	if _, err := runCLI(t, "scan", "image"); err == nil || !strings.Contains(err.Error(), "--input") {
+		t.Errorf("no reference: err = %v", err)
+	}
+	if _, err := runCLI(t, "scan", "image", "x", "--platform", "linux"); err == nil || !strings.Contains(err.Error(), "invalid platform") {
+		t.Errorf("bad platform: err = %v", err)
+	}
+}
+
+func tarBytes(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		tw.WriteHeader(&tar.Header{Name: n, Mode: 0o644, Size: int64(len(files[n])), Typeflag: tar.TypeReg})
+		tw.Write([]byte(files[n]))
+	}
+	tw.Close()
+	return buf.Bytes()
 }

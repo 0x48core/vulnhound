@@ -2,8 +2,12 @@ package analyzer
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -130,18 +134,62 @@ o:openssl
 	}
 }
 
-func TestGoBinary(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+// goBinary builds vulnhound's CLI once and returns its path. A binary
+// from `go build` always embeds its module dependencies; the test binary
+// itself does not on every Go version (Go 1.26 records only the Go
+// version), so the tests must not rely on it.
+func goBinary(t *testing.T) string {
+	t.Helper()
+	goBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "vulnhound-gobinary-*")
+		if err != nil {
+			goBinaryErr = err
+			return
+		}
+		goBinaryDir = dir
+		goBinaryPath = filepath.Join(dir, "vulnhound"+exeSuffix())
+		cmd := exec.Command("go", "build", "-o", goBinaryPath, "github.com/0x48core/vulnhound/cmd/vulnhound")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			goBinaryErr = fmt.Errorf("go build: %v\n%s", err, out)
+		}
+	})
+	if goBinaryErr != nil {
+		t.Fatal(goBinaryErr)
 	}
+	return goBinaryPath
+}
+
+var (
+	goBinaryOnce sync.Once
+	goBinaryDir  string
+	goBinaryPath string
+	goBinaryErr  error
+)
+
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if goBinaryDir != "" {
+		_ = os.RemoveAll(goBinaryDir)
+	}
+	os.Exit(code)
+}
+
+func TestGoBinary(t *testing.T) {
+	exe := goBinary(t)
 	info, err := os.Stat(exe)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := GoBinary{}
 	if !a.MatchFile(exe, info.Mode(), info.Size()) {
-		t.Fatalf("test binary (%s, %d bytes) should match", info.Mode(), info.Size())
+		t.Fatalf("Go binary (%s, %d bytes) should match", info.Mode(), info.Size())
 	}
 	if a.MatchFile("x", 0o644, info.Size()) || a.MatchFile("x", 0o755, 100) {
 		t.Error("non-executable or tiny files must not match")
@@ -158,9 +206,11 @@ func TestGoBinary(t *testing.T) {
 	if std, ok := found["stdlib"]; !ok || std.Version == "" || std.Version[0] == 'g' {
 		t.Errorf("stdlib = %+v, want the Go version without the go prefix", std)
 	}
-	// This package imports golang.org/x/sync, so the test binary embeds it.
-	if sync, ok := found["golang.org/x/sync"]; !ok || sync.Version != "v0.24.0" || sync.Locations[0].Path != filepath.Base(exe) {
-		t.Errorf("golang.org/x/sync = %+v (all: %v)", sync, pkgs)
+	// vulnhound depends on cobra and golang.org/x/sync (see go.mod).
+	for name, version := range map[string]string{"github.com/spf13/cobra": "v1.8.1", "golang.org/x/sync": "v0.24.0"} {
+		if dep, ok := found[name]; !ok || dep.Version != version || dep.Locations[0].Path != filepath.Base(exe) {
+			t.Errorf("%s = %+v, want %s (all: %v)", name, dep, version, pkgs)
+		}
 	}
 
 	// A non-Go file is skipped silently, not an error.
@@ -171,8 +221,7 @@ func TestGoBinary(t *testing.T) {
 }
 
 func TestCatalogForImageUsesFileMatcher(t *testing.T) {
-	exe, _ := os.Executable()
-	data, err := os.ReadFile(exe)
+	data, err := os.ReadFile(goBinary(t))
 	if err != nil {
 		t.Fatal(err)
 	}

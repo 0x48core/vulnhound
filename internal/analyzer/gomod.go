@@ -56,12 +56,16 @@ func (GoMod) Analyze(_ context.Context, fsys fs.FS, p string) ([]types.Package, 
 			}
 			name, version = r.New.Path, r.New.Version
 		}
+		line := 0
+		if req.Syntax != nil {
+			line = req.Syntax.Start.Line
+		}
 		pkgs = append(pkgs, types.Package{
 			Name:      name,
 			Version:   version,
 			Ecosystem: types.EcosystemGo,
 			PURL:      purl.Build("golang", name, version),
-			Locations: []string{p},
+			Locations: []types.Location{{Path: p, Line: line}},
 			Direct:    !req.Indirect,
 		})
 	}

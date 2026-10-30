@@ -51,15 +51,20 @@ func (NpmLock) Analyze(_ context.Context, fsys fs.FS, p string) ([]types.Package
 	if err := json.Unmarshal(data, &lock); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", p, err)
 	}
-	if len(lock.Packages) > 0 {
-		return npmFromPackages(lock.Packages, p), nil
+	// Line numbers are best effort: a package without one is still reported.
+	lines, err := jsonKeyLines(data)
+	if err != nil {
+		lines = nil
 	}
-	return npmFromDependencies(lock.Dependencies, rootDeps(fsys, p), p), nil
+	if len(lock.Packages) > 0 {
+		return npmFromPackages(lock.Packages, p, lines), nil
+	}
+	return npmFromDependencies(lock.Dependencies, rootDeps(fsys, p), p, lines), nil
 }
 
 // npmFromPackages handles the flat "packages" map of lockfile v2/v3, keyed
 // by install path such as "node_modules/a/node_modules/@scope/b".
-func npmFromPackages(entries map[string]npmPackage, loc string) []types.Package {
+func npmFromPackages(entries map[string]npmPackage, file string, lines map[string]int) []types.Package {
 	direct := make(map[string]bool)
 	if root, ok := entries[""]; ok {
 		for _, m := range []map[string]string{root.Dependencies, root.DevDependencies, root.OptionalDependencies, root.PeerDependencies} {
@@ -85,17 +90,20 @@ func npmFromPackages(entries map[string]npmPackage, loc string) []types.Package 
 			continue
 		}
 		isTopLevel := idx == 0
+		loc := types.Location{Path: file, Line: lines["packages\x00"+key]}
 		pkgs = append(pkgs, npmPackageOf(name, e.Version, loc, isTopLevel && direct[installName], e.Dev))
 	}
 	return pkgs
 }
 
 // npmFromDependencies handles the nested "dependencies" tree of lockfile v1.
-func npmFromDependencies(deps map[string]npmDependency, direct map[string]bool, loc string) []types.Package {
+func npmFromDependencies(deps map[string]npmDependency, direct map[string]bool, file string, lines map[string]int) []types.Package {
 	var pkgs []types.Package
-	var walk func(map[string]npmDependency, bool)
-	walk = func(m map[string]npmDependency, topLevel bool) {
+	var walk func(map[string]npmDependency, string, bool)
+	walk = func(m map[string]npmDependency, parent string, topLevel bool) {
 		for installName, d := range m {
+			keyPath := parent + "\x00" + installName
+			loc := types.Location{Path: file, Line: lines[keyPath]}
 			name, version := installName, d.Version
 			// Aliases are recorded as "npm:<real-name>@<version>".
 			if real, ok := strings.CutPrefix(version, "npm:"); ok {
@@ -106,10 +114,10 @@ func npmFromDependencies(deps map[string]npmDependency, direct map[string]bool, 
 			if isRegistryVersion(version) {
 				pkgs = append(pkgs, npmPackageOf(name, version, loc, topLevel && direct[installName], d.Dev))
 			}
-			walk(d.Dependencies, false)
+			walk(d.Dependencies, keyPath+"\x00dependencies", false)
 		}
 	}
-	walk(deps, true)
+	walk(deps, "dependencies", true)
 	return pkgs
 }
 
@@ -139,13 +147,13 @@ func isRegistryVersion(v string) bool {
 	return v != "" && !strings.Contains(v, ":")
 }
 
-func npmPackageOf(name, version, loc string, direct, dev bool) types.Package {
+func npmPackageOf(name, version string, loc types.Location, direct, dev bool) types.Package {
 	return types.Package{
 		Name:      name,
 		Version:   version,
 		Ecosystem: types.EcosystemNpm,
 		PURL:      purl.Build("npm", name, version),
-		Locations: []string{loc},
+		Locations: []types.Location{loc},
 		Direct:    direct,
 		Dev:       dev,
 	}

@@ -5,7 +5,6 @@
 
 ### Features
 
-* group table output by package with colors and upgrade advice ([1fc6da1](https://github.com/0x48core/vulnhound/commit/1fc6da1d6097e91d864361f6c499b890a57ebd39))
 * group table output by package with colors and upgrade advice ([f1d959e](https://github.com/0x48core/vulnhound/commit/f1d959e933ab617d0176ebe45d2ee062ec690dbc))
 
 ## 0.1.0 (2026-10-29)

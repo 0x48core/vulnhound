@@ -18,13 +18,27 @@ const (
 
 // Package is a single dependency discovered in a target.
 type Package struct {
-	Name      string   `json:"name"`
-	Version   string   `json:"version"`
-	Ecosystem string   `json:"ecosystem"`
-	PURL      string   `json:"purl"`
-	Locations []string `json:"locations"`
-	Direct    bool     `json:"direct"`
-	Dev       bool     `json:"dev,omitempty"`
+	Name      string     `json:"name"`
+	Version   string     `json:"version"`
+	Ecosystem string     `json:"ecosystem"`
+	PURL      string     `json:"purl"`
+	Locations []Location `json:"locations"`
+	Direct    bool       `json:"direct"`
+	Dev       bool       `json:"dev,omitempty"`
+}
+
+// Location is where a package was declared: a slash-separated path relative
+// to the scan root, and the 1-based line when the analyzer knows it.
+type Location struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+}
+
+func (l Location) String() string {
+	if l.Line > 0 {
+		return fmt.Sprintf("%s:%d", l.Path, l.Line)
+	}
+	return l.Path
 }
 
 // Key identifies a package independently of where it was found.
@@ -111,11 +125,20 @@ type Finding struct {
 	URL       string   `json:"url"`
 }
 
+// IgnoredFinding is a finding suppressed by an ignore file.
+type IgnoredFinding struct {
+	Finding
+	Reason string `json:"reason,omitempty"`
+	Until  string `json:"until,omitempty"` // YYYY-MM-DD the rule expires
+}
+
 // Report is the complete result of a scan.
 type Report struct {
-	Target      string    `json:"target"`
-	TargetType  string    `json:"target_type"`
-	GeneratedAt time.Time `json:"generated_at"`
-	Packages    []Package `json:"packages"`
-	Findings    []Finding `json:"findings"`
+	Target      string           `json:"target"`
+	TargetType  string           `json:"target_type"`
+	GeneratedAt time.Time        `json:"generated_at"`
+	Packages    []Package        `json:"packages"`
+	Findings    []Finding        `json:"findings"`
+	Ignored     []IgnoredFinding `json:"ignored,omitempty"`
+	IgnoreFile  string           `json:"ignore_file,omitempty"`
 }

@@ -47,6 +47,25 @@ jobs:
           jq -e '.findings | length > 0' "$REPORT" > /dev/null
           vulnhound version # build step put vulnhound on PATH
 
+      - name: Scan with exclude and SARIF
+        id: excluded
+        uses: ./
+        with:
+          path: internal/analyzer/testdata
+          exclude: npm-v1, npm-v3
+          sarif: "true"
+          setup-go: "false"
+
+      - name: Expect only Go packages and a SARIF report
+        shell: bash
+        env:
+          REPORT: ${{ steps.excluded.outputs.report }}
+          SARIF: ${{ steps.excluded.outputs.sarif }}
+        run: |
+          jq -e '[.packages[].ecosystem] | unique == ["Go"]' "$REPORT"
+          jq -e '.version == "2.1.0" and (.runs[0].results | length > 0)' "$SARIF"
+          jq -e '.runs[0].results[0].locations[0].physicalLocation.region.startLine > 1' "$SARIF"
+
       # Go is already set up by the first scan, so this also covers setup-go: false.
       - name: Scan with --fail-on critical
         id: strict

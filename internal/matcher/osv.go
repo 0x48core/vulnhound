@@ -69,17 +69,21 @@ type osvVuln struct {
 			Name      string `json:"name"`
 		} `json:"package"`
 		Ranges []struct {
-			Type   string `json:"type"`
-			Events []struct {
-				Introduced   string `json:"introduced"`
-				Fixed        string `json:"fixed"`
-				LastAffected string `json:"last_affected"`
-			} `json:"events"`
+			Type   string     `json:"type"`
+			Events []osvEvent `json:"events"`
 		} `json:"ranges"`
+		Versions          []string          `json:"versions"` // explicitly affected versions
 		DatabaseSpecific  osvSeverityHolder `json:"database_specific"`
 		EcosystemSpecific osvSeverityHolder `json:"ecosystem_specific"`
 	} `json:"affected"`
 	DatabaseSpecific osvSeverityHolder `json:"database_specific"`
+}
+
+// osvEvent is one range event; exactly one field is set.
+type osvEvent struct {
+	Introduced   string `json:"introduced"`
+	Fixed        string `json:"fixed"`
+	LastAffected string `json:"last_affected"`
 }
 
 type osvSeverityHolder struct {

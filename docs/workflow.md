@@ -52,10 +52,38 @@ flowchart TD
 | 5 | Analyze | `analyzer.Catalog` phase 2 | Parallel; records file and line; one bad file only produces a warning |
 | 6 | Deduplicate | `analyzer.dedupe` | Merge by ecosystem + name + version, union locations |
 | 7 | Filter | `scan.Run` | `--skip-dev` drops packages that are dev-only everywhere |
-| 8 | Match | `matcher.OSV.Match` | Skipped when there are no packages |
+| 8 | Match | `matcher.OSV.Match`, or `matcher.Offline.Match` with `--offline` | Skipped when there are no packages |
 | 9 | Ignore | `ignore.Apply` | Moves matching findings to `ignored`; rules past `until` warn and stop applying |
 | 10 | Report | `report.Write` | Table grouped by package, JSON, or SARIF; `--sarif-output` writes SARIF too |
 | 11 | Apply policy | `runScan` | `--fail-on` (kept findings only) returns `errFindings` → exit 1 |
+
+### Offline scans
+
+With `--offline`, step 8 reads from the local database instead of the API:
+
+```mermaid
+flowchart LR
+    U[vulnhound db update] -->|ETag changed?| D[download all.zip<br/>verify MD5]
+    D --> I[build index.json]
+    I --> DB[(local database)]
+    S[scan --offline] --> L[look up each package<br/>in index.json]
+    DB --> L
+    L --> E[evaluate affected ranges<br/>internal/version]
+    E --> F[same findings as online]
+```
+
+In CI, keep the database between runs with a cache and refresh it at the
+start of each job; an unchanged dump costs one small request:
+
+```yaml
+- uses: actions/cache@v4
+  with:
+    path: ~/.cache/vulnhound/osv
+    key: vulnhound-osv-${{ github.run_id }}
+    restore-keys: vulnhound-osv-
+- run: vulnhound db update Go npm
+- run: vulnhound scan dir . --offline --fail-on high
+```
 
 ### Debugging a scan
 
